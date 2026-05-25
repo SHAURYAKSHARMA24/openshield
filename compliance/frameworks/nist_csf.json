@@ -123,6 +123,11 @@
       "control_name": "Monitoring for unauthorized personnel, connections, devices, and software is performed",
       "description": "Diagnostic logging on Azure Storage services provides the audit trail needed to monitor for unauthorized or anomalous read, write, and delete operations. Without logging, detection of data exfiltration or unauthorized access to blob, queue, or table services is not possible."
     },
+    "AZ-STOR-005": {
+      "control_id": "PR.IP-4",
+      "control_name": "Backups of information are conducted, maintained, and tested",
+      "description": "Storage accounts configured with LRS or ZRS replicate data only within a single region. A regional outage or disaster could result in data unavailability or data loss. PR.IP-4 requires that backups and redundant copies of information are maintained. Geo-redundant replication (GRS or GZRS) ensures a secondary copy of data is maintained in a separate Azure region, satisfying backup and recovery requirements."
+    },
     "AZ-NET-011": {
       "control_id": "DE.CM-7",
       "control_name": "Monitoring for unauthorized personnel, connections, devices, and software is performed",
