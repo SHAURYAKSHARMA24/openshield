@@ -328,6 +328,15 @@ jobs:
               print(f"All compliance controls map to existing rule files. ({len(existing_ids)} rules checked)")
           PYEOF
 
+      # ── CHECK 8: All regression tests (Mocked dependencies) ──────────
+      - name: All regression tests
+        id: all_tests
+        env:
+          DATABASE_URL: "postgresql://ci:ci@localhost/ci_db"
+          OPENSHIELD_ENV: "testing"
+        run: |
+          echo "=== Running all regression tests ==="
+          pytest tests/test_*.py -v --tb=short
       # ── CHECK 8: Rule regression tests (MockAzureClient, no Azure creds) ──
       - name: Rule regression tests
         id: rule_tests
@@ -355,6 +364,7 @@ jobs:
           JSON:       ${{ steps.json_check.outcome }}
           API:        ${{ steps.api_check.outcome }}
           XREF:       ${{ steps.xref_check.outcome }}
+          ALL_TESTS:  ${{ steps.all_tests.outcome }}
           PYTEST:     ${{ steps.pytest_check.outcome }}
           RULE_TESTS: ${{ steps.rule_tests.outcome }}
         run: |
@@ -369,6 +379,7 @@ jobs:
               ("Compliance JSON validation",           os.environ["JSON"]),
               ("API syntax check",                     os.environ["API"]),
               ("Compliance vs rule cross-reference",   os.environ["XREF"]),
+              ("All regression tests",                 os.environ["ALL_TESTS"]),
               ("Python test suite",                      os.environ["PYTEST"]),
               ("Rule regression tests",                os.environ["RULE_TESTS"]),
           ]
