@@ -335,6 +335,15 @@ jobs:
           echo "=== Running rule regression tests ==="
           pytest tests/test_rules_*.py tests/test_clean_scan.py -v --tb=short
 
+      # ── CHECK 8: Full Python test suite ──────────────────────────────
+      - name: Run Python test suite
+        id: pytest_check
+        run: |
+          echo "=== Running full Python test suite ==="
+          python -m pytest tests/             --ignore=tests/smoke_test.py             -v --tb=short -q
+        env:
+          OPENSHIELD_ENV: "development"
+
       # ── Final summary — always runs, shows per-check pass/fail ────────
       - name: CI Summary
         if: always()
@@ -346,6 +355,7 @@ jobs:
           JSON:       ${{ steps.json_check.outcome }}
           API:        ${{ steps.api_check.outcome }}
           XREF:       ${{ steps.xref_check.outcome }}
+          PYTEST:     ${{ steps.pytest_check.outcome }}
           RULE_TESTS: ${{ steps.rule_tests.outcome }}
         run: |
           python - <<'PYEOF'
@@ -359,6 +369,7 @@ jobs:
               ("Compliance JSON validation",           os.environ["JSON"]),
               ("API syntax check",                     os.environ["API"]),
               ("Compliance vs rule cross-reference",   os.environ["XREF"]),
+              ("Python test suite",                      os.environ["PYTEST"]),
               ("Rule regression tests",                os.environ["RULE_TESTS"]),
           ]
 
