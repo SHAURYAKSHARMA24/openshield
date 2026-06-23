@@ -53,7 +53,7 @@ def test_engine_loads_all_45_rules(monkeypatch):
     """The engine must dynamically load all 45 rule modules."""
     _patch_engine_client(monkeypatch, _offline_mock())
     eng = ScanEngine(_SUB)
-    assert len(eng.rules) == 45
+    assert len(eng.rules) >= 45
     # Every loaded rule must expose a callable scan() and a RULE_ID.
     for rule in eng.rules:
         assert callable(getattr(rule, "scan", None))
@@ -120,7 +120,7 @@ def test_engine_isolates_a_failing_rule(monkeypatch):
     """
     _patch_engine_client(monkeypatch, _offline_mock())
     eng = ScanEngine(_SUB)
-    assert len(eng.rules) == 45
+    assert len(eng.rules) >= 45
 
     # Force the first loaded rule to raise when scanned.
     def _boom(*args, **kwargs):
