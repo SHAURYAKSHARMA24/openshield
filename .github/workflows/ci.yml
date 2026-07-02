@@ -122,10 +122,6 @@ jobs:
         id: cred_scan
         run: |
           echo "=== Scanning for hardcoded credentials ==="
-          # Each credential-name pattern requires a quoted string literal on the
-          # right-hand side. This flags real hardcoded values (api_key = "sk-...")
-          # while ignoring safe assignments to function calls or expressions
-          # (api_key = str(data.get(...)) , _SECRET = secrets.token_urlsafe(32)).
           PATTERNS=(
             "password\s*=\s*['\"]"
             "secret\s*=\s*['\"]"
@@ -337,6 +333,7 @@ jobs:
         run: |
           echo "=== Running all regression tests ==="
           pytest tests/test_*.py -v --tb=short
+
       # ── CHECK 8: Rule regression tests (MockAzureClient, no Azure creds) ──
       - name: Rule regression tests
         id: rule_tests
@@ -380,7 +377,7 @@ jobs:
               ("API syntax check",                     os.environ["API"]),
               ("Compliance vs rule cross-reference",   os.environ["XREF"]),
               ("All regression tests",                 os.environ["ALL_TESTS"]),
-              ("Python test suite",                      os.environ["PYTEST"]),
+              ("Python test suite",                    os.environ["PYTEST"]),
               ("Rule regression tests",                os.environ["RULE_TESTS"]),
           ]
 
