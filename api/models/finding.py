@@ -103,6 +103,18 @@ class DatabaseManager:
             self.conn = None
             logger.debug("Database connection closed")
 
+    def ping(self) -> bool:
+        """Execute a trivial query to confirm database connectivity.
+
+        Used by the /ready probe. Raises on failure so the caller can map it
+        to a 503; returns True when the database answers.
+        """
+        conn = self._get_conn()
+        with conn.cursor() as cur:
+            cur.execute("SELECT 1")
+            cur.fetchone()
+        return True
+
     # ------------------------------------------------------------------ #
     # Schema                                                                #
     # ------------------------------------------------------------------ #
