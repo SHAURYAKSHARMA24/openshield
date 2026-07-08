@@ -60,6 +60,7 @@ class MockAzureClient:
         self._storage_logging: Dict[Tuple[str, str, str], Optional[bool]] = {}
         self._virtual_networks: List[Any] = []
         self._public_ip_addresses: List[Any] = []
+        self._load_balancers: List[Any] = []
         self._all_azure_firewalls: Optional[List[Any]] = []
         self._vnet_peerings: Dict[Tuple[str, str], List[Any]] = {}
         self._postgresql_servers: List[Any] = []
@@ -205,6 +206,13 @@ class MockAzureClient:
 
     def get_public_ip_addresses(self) -> List[Any]:
         return self._public_ip_addresses
+
+    def set_load_balancers(self, load_balancers: List[Any]) -> "MockAzureClient":
+        self._load_balancers = load_balancers
+        return self
+
+    def get_load_balancers(self) -> List[Any]:
+        return self._load_balancers
 
     def set_all_azure_firewalls(
         self, firewalls: Optional[List[Any]]

@@ -24,8 +24,12 @@ persistence, AI/RAG layer, CVE/NVD correlation, and frontend build all work.
 Rule-test coverage was the largest gap and is now **closed** — every one of the
 **45** scanner rules has dedicated compliant + non-compliant unit tests (was 10 of
 44 on the docs branch; `az_net_015` coverage was added when rebasing onto
-`upstream/dev`). Full backend suite: **170 passed, 0 failed**; `scanner/rules`
-coverage **90%**.
+`upstream/dev`). Full backend suite: **170 passed, 0 failed** on the original
+`upstream/dev` base; after merging the current `dev` (which added its own test
+modules) a 2026-07-08 re-run reports **223 passed, 2 skipped** — the only non-pass
+is `test_ai_hallucination_guard.py::test_vector_store_purity`, which requires the
+optional `chromadb` package plus a built vector store and is unrelated to this
+PR's changes. `scanner/rules` coverage **90%**.
 
 Validation also surfaced **two genuine rule-correctness bugs** (both masked by
 bare `except` clauses), one broken AI module, an observability gap in the scan
@@ -186,9 +190,13 @@ playbooks (now **45 / 45** on `upstream/dev`).
 
 Test counts after additions:
 
-- `pytest -q` (full backend suite): **170 passed, 0 failed** (on `upstream/dev`; was 164
-  on the docs branch — upstream adds its own tests incl. `test_worker.py`, plus the 3
-  `az_net_015` tests added here)
+- `pytest -q` (full backend suite): **170 passed, 0 failed** on the original
+  `upstream/dev` base (was 164 on the docs branch — upstream adds its own tests incl.
+  `test_worker.py`, plus the 3 `az_net_015` tests added here). After merging the current
+  `dev`, the 2026-07-08 re-run reports **223 passed, 2 skipped**; the lone non-pass is
+  `test_ai_hallucination_guard.py::test_vector_store_purity` (needs optional `chromadb`
+  + a built vector store — an environment prerequisite, not a code regression, and not
+  a file this PR touches).
 - `pytest tests/test_rules_*.py -q` (CI rule-regression slice): **92 passed** (was 89; +3
   for `az_net_015`)
 - `pytest tests/test_engine_integration.py -q`: **4 passed**

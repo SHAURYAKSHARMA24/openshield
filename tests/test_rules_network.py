@@ -1,6 +1,6 @@
 """Rule regression tests for the network rules AZ-NET-001 .. AZ-NET-014.
 
-AZ-NET-007/008/009/010 construct a NetworkManagementClient inside scan(); those
+AZ-NET-007/009/010 construct a NetworkManagementClient inside scan(); those
 tests monkeypatch azure.mgmt.network.NetworkManagementClient. The rest read data
 through MockAzureClient accessors. No real network calls are made.
 """
@@ -267,22 +267,22 @@ def test_net_007_noncompliant_returns_one_finding(mock_azure, subscription_id, m
     assert findings[0]["severity"] == "HIGH"
 
 
-# ── AZ-NET-008: Load balancer with no backend pool (SDK) ────────────────────
+# ── AZ-NET-008: Load balancer with no backend pool (accessor) ───────────────
 
-def test_net_008_compliant_returns_no_findings(mock_azure, subscription_id, monkeypatch):
+def test_net_008_compliant_returns_no_findings(mock_azure, subscription_id):
     lb = make_resource(
         id="/lb1", name="lb-ok", location="eastus",
         backend_address_pools=[make_resource(name="pool1")],
     )
-    _install_network_client(monkeypatch, load_balancers=[lb])
+    mock_azure.set_load_balancers([lb])
     assert az_net_008.scan(mock_azure, subscription_id) == []
 
 
-def test_net_008_noncompliant_returns_one_finding(mock_azure, subscription_id, monkeypatch):
+def test_net_008_noncompliant_returns_one_finding(mock_azure, subscription_id):
     lb = make_resource(
         id="/lb2", name="lb-empty", location="eastus", backend_address_pools=[]
     )
-    _install_network_client(monkeypatch, load_balancers=[lb])
+    mock_azure.set_load_balancers([lb])
     findings = az_net_008.scan(mock_azure, subscription_id)
     assert len(findings) == 1
     assert findings[0]["rule_id"] == "AZ-NET-008"
