@@ -12,9 +12,17 @@ import scanner.rules.az_stor_005 as az_stor_005
 from tests.helpers.mock_azure import make_resource
 
 _REQUIRED_FIELDS = {
-    "rule_id", "rule_name", "severity", "category",
-    "resource_id", "resource_name", "resource_type",
-    "description", "remediation", "playbook", "frameworks",
+    "rule_id",
+    "rule_name",
+    "severity",
+    "category",
+    "resource_id",
+    "resource_name",
+    "resource_type",
+    "description",
+    "remediation",
+    "playbook",
+    "frameworks",
 }
 
 _SUB = "00000000-0000-0000-0000-000000000001"
@@ -22,10 +30,7 @@ _RG = "rg-test"
 
 
 def _storage_id(name):
-    return (
-        f"/subscriptions/{_SUB}/resourceGroups/{_RG}"
-        f"/providers/Microsoft.Storage/storageAccounts/{name}"
-    )
+    return f"/subscriptions/{_SUB}/resourceGroups/{_RG}/providers/Microsoft.Storage/storageAccounts/{name}"
 
 
 def test_stor_001_compliant_returns_no_findings(mock_azure, subscription_id):
