@@ -1,7 +1,19 @@
 name: Deploy API to Render
 
 on:
+  push:
+    branches:
+      - dev
+      - main
   workflow_dispatch:   # allows manual trigger from GitHub UI
+
+# Never let two deploys of the same branch race each other.
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
 
 jobs:
   deploy:
@@ -31,31 +43,70 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      # ── Secret check (Determines if smoke tests should run) ───────────
-      - name: Check for JWT_SECRET
-        id: check_config
+      # ── Branch → environment routing ───────────────────────────────────
+      # dev  -> staging, main -> production. Any other ref (e.g. a manual
+      # dispatch from a feature branch) is treated as non-protected: we do not
+      # have a Render environment for it, so deploy/health/smoke are skipped.
+      - name: Select target environment
+        id: target
         run: |
-          if [ -n "${{ secrets.JWT_SECRET }}" ]; then
-            echo "is_configured=true" >> $GITHUB_OUTPUT
-          else
-            echo "is_configured=false" >> $GITHUB_OUTPUT
-          fi
+          case "${{ github.ref_name }}" in
+            dev)
+              echo "env_name=staging" >> "$GITHUB_OUTPUT"
+              echo "is_protected=true" >> "$GITHUB_OUTPUT"
+              ;;
+            main)
+              echo "env_name=production" >> "$GITHUB_OUTPUT"
+              echo "is_protected=true" >> "$GITHUB_OUTPUT"
+              ;;
+            *)
+              echo "env_name=none" >> "$GITHUB_OUTPUT"
+              echo "is_protected=false" >> "$GITHUB_OUTPUT"
+              ;;
+          esac
+          echo "Target environment: $(grep env_name "$GITHUB_OUTPUT" | cut -d= -f2)"
 
-      # ── Wait for Render auto-deployment ────────────────────────────────
-      # Render handles the actual physical deployment when you push.
-      # We just pause the Action to let Render's servers finish building.
-      - name: Wait for app to initialise
-        run: |
-          echo "Waiting 120 seconds for Render to build and start the app..."
-          sleep 120
-
-      # ── Health gate ────────────────────────────────────────────────────
-      - name: Health gate check
-        id: health_gate
+      # ── Deterministic Render deploy ────────────────────────────────────
+      # Triggers a deploy of the correct service pinned to this commit SHA and
+      # blocks until Render reports that specific deploy live (or fails). No
+      # fixed sleeps: the step's exit code is Render's real deploy status.
+      - name: Deploy to Render and wait for it to go live
+        if: steps.target.outputs.is_protected == 'true'
         env:
-          # Use secret URL if provided, otherwise fallback to default
-          API_URL: ${{ secrets.API_URL || 'https://openshield-api.onrender.com' }}
+          RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+          # Both ids are exposed; the correct one is chosen strictly by branch
+          # below (avoids empty-string fallback selecting the wrong environment).
+          RENDER_STAGING_SERVICE_ID: ${{ secrets.RENDER_STAGING_SERVICE_ID }}
+          RENDER_PRODUCTION_SERVICE_ID: ${{ secrets.RENDER_PRODUCTION_SERVICE_ID }}
+          GITHUB_SHA: ${{ github.sha }}
         run: |
+          if [ "${{ github.ref_name }}" = "main" ]; then
+            export RENDER_SERVICE_ID="$RENDER_PRODUCTION_SERVICE_ID"
+          else
+            export RENDER_SERVICE_ID="$RENDER_STAGING_SERVICE_ID"
+          fi
+          if [ -z "$RENDER_API_KEY" ] || [ -z "$RENDER_SERVICE_ID" ]; then
+            echo "ERROR: RENDER_API_KEY and the ${{ steps.target.outputs.env_name }} service id must be configured as GitHub secrets."
+            exit 1
+          fi
+          python scripts/render_deploy.py
+
+      # ── Health gate (against the branch-specific URL) ──────────────────
+      - name: Health gate check
+        if: steps.target.outputs.is_protected == 'true'
+        env:
+          STAGING_API_URL: ${{ secrets.STAGING_API_URL }}
+          PRODUCTION_API_URL: ${{ secrets.PRODUCTION_API_URL }}
+        run: |
+          if [ "${{ github.ref_name }}" = "main" ]; then
+            API_URL="$PRODUCTION_API_URL"
+          else
+            API_URL="$STAGING_API_URL"
+          fi
+          if [ -z "$API_URL" ]; then
+            echo "ERROR: the ${{ steps.target.outputs.env_name }} API URL secret is not configured."
+            exit 1
+          fi
           MAX_RETRIES=5
           RETRY_DELAY=15
           URL="${API_URL}/health"
@@ -74,22 +125,15 @@ jobs:
             sleep $RETRY_DELAY
           done
 
-          echo "HEALTH GATE FAILED after $MAX_RETRIES attempts"
-          echo "Note: If you haven't set up Render for this fork, this is expected."
-          # Only allow failure on feature branches; fail on main/dev
-          if [[ "${{ github.ref }}" == "refs/heads/main" || "${{ github.ref }}" == "refs/heads/dev" ]]; then
-            echo "ERROR: Health check failed on protected branch. Deployment verification required."
-            exit 1
-          else
-            echo "Allowing health check failure on feature branch (infra may not be set up)"
-            exit 0
-          fi
+          echo "ERROR: Health gate failed after $MAX_RETRIES attempts on the ${{ steps.target.outputs.env_name }} environment."
+          exit 1
 
-      # ── Smoke tests ────────────────────────────────────────────────────
+      # ── Smoke tests (against the same branch-specific URL) ─────────────
       - name: Run smoke tests against live deployment
-        if: steps.check_config.outputs.is_configured == 'true' || github.event_name == 'workflow_dispatch'
+        if: steps.target.outputs.is_protected == 'true'
         env:
-          API_URL: ${{ secrets.API_URL || 'https://openshield-api.onrender.com' }}
+          STAGING_API_URL: ${{ secrets.STAGING_API_URL }}
+          PRODUCTION_API_URL: ${{ secrets.PRODUCTION_API_URL }}
           JWT_SECRET: ${{ secrets.JWT_SECRET }}
           AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
           AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
@@ -97,9 +141,21 @@ jobs:
           AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
           RUN_REAL_SCAN: "true"
         run: |
-          if [[ "${{ github.ref }}" == "refs/heads/main" && -z "${{ secrets.JWT_SECRET }}" ]]; then
-            echo "ERROR: Cannot run smoke tests on main branch without JWT_SECRET configured"
+          if [ "${{ github.ref_name }}" = "main" ]; then
+            export API_URL="$PRODUCTION_API_URL"
+          else
+            export API_URL="$STAGING_API_URL"
+          fi
+          if [ -z "$JWT_SECRET" ]; then
+            echo "ERROR: JWT_SECRET is required to run smoke tests against a protected environment."
             exit 1
           fi
           echo "Running smoke tests against: $API_URL"
           python tests/smoke_test.py
+
+      # ── Non-protected refs ─────────────────────────────────────────────
+      - name: Skip deploy for non-protected ref
+        if: steps.target.outputs.is_protected != 'true'
+        run: |
+          echo "Ref '${{ github.ref_name }}' has no Render environment (only dev->staging and main->production deploy)."
+          echo "Skipping deploy, health gate, and smoke tests."
