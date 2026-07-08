@@ -32,9 +32,7 @@ def _build_summary_prompt(findings: list) -> str:
     lines = []
     for f in findings:
         title = f.get("title") or f.get("rule_name") or "Untitled"
-        lines.append(
-            f"- [{f.get('severity', 'UNKNOWN')}] {title}: {f.get('description', 'No description provided.')}"
-        )
+        lines.append(f"- [{f.get('severity', 'UNKNOWN')}] {title}: {f.get('description', 'No description provided.')}")
     findings_text = "\n".join(lines)
     return (
         "You are a security advisor writing for a non-technical executive audience.\n"
@@ -55,9 +53,7 @@ def _build_question_prompt(sorted_findings: list, question: str) -> str:
         description = f.get("description", "No description provided.")
         remediation = f.get("remediation", "No remediation detail provided.")
         label = f"{rule_id} — {title}" if rule_id else title
-        lines.append(
-            f"- [{severity}] {label}: {description} Remediation: {remediation}"
-        )
+        lines.append(f"- [{severity}] {label}: {description} Remediation: {remediation}")
     findings_text = "\n".join(lines)
     return (
         "You are a cloud security assistant.\n"
@@ -94,6 +90,36 @@ def _build_remediation_prompt(sorted_findings: list) -> str:
     )
 
 
+def _build_threat_simulation_prompt(findings_text: str, context: str) -> str:
+    return (
+        "You are a red team security analyst. Using the Azure cloud security "
+        "findings below and the grounded knowledge provided, construct a realistic "
+        "attacker kill chain narrative showing how a real attacker would exploit "
+        "these misconfigurations in sequence.\n\n"
+        "Respond with valid JSON only, no markdown. Use this exact structure:\n"
+        "{\n"
+        '  "summary": "<one sentence overall attack narrative>",\n'
+        '  "overall_risk": "<CRITICAL|HIGH|MEDIUM|LOW>",\n'
+        '  "stages": [\n'
+        "    {\n"
+        '      "stage": "<initial_access|reconnaissance|lateral_movement|privilege_escalation|persistence|impact>",\n'
+        '      "title": "<short stage title>",\n'
+        '      "description": "<what the attacker does and why this finding enables it>",\n'
+        '      "findings_used": ["<rule_id>"],\n'
+        '      "technique": "<MITRE ATT&CK technique name if applicable>"\n'
+        "    }\n"
+        "  ]\n"
+        "}\n\n"
+        "Rules:\n"
+        "- Only include stages directly enabled by the findings provided.\n"
+        "- Map each stage to at least one rule_id from the findings list.\n"
+        "- Do not invent findings or capabilities not present in the data.\n"
+        "- If findings are insufficient for a full kill chain, only include supported stages.\n\n"
+        f"GROUNDED KNOWLEDGE:\n{context}\n\n"
+        f"FINDINGS:\n{findings_text}"
+    )
+
+
 def _findings_to_text(findings):
     ordered = sorted(
         findings,
@@ -113,7 +139,8 @@ def _findings_to_text(findings):
 def _context_for(query):
     chunks = retrieve(query, n_results=5)
     context = "\n".join(f"- ({c['source']}) {c['text']}" for c in chunks)
-    sources = [c["source"] for c in chunks if c["source"]]
+    # Extract structured source_meta for the frontend badges
+    sources = [c["source_meta"] for c in chunks if c["source_meta"]]
     return context, sources
 
 
@@ -200,20 +227,20 @@ def ai_summary():
         f"GROUNDED KNOWLEDGE:\n{context}\n\nFINDINGS:\n{findings_text}"
     )
     try:
-        answer = get_completion(
-            body["provider"], body["api_key"], prompt, model=body.get("model")
-        )
+        answer = get_completion(body["provider"], body["api_key"], prompt, model=body.get("model"))
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
     except RuntimeError as exc:
         return jsonify({"error": str(exc)}), 502
 
-    return jsonify({
-        "summary": answer,
-        "sources": sources,
-        "provider": body["provider"],
-        "model": body.get("model"),
-    })
+    return jsonify(
+        {
+            "summary": answer,
+            "sources": sources,
+            "provider": body["provider"],
+            "model": body.get("model"),
+        }
+    )
 
 
 @ai_bp.post("/api/ai/prioritise")
@@ -240,9 +267,7 @@ def ai_prioritise():
         f"GROUNDED KNOWLEDGE:\n{context}\n\nFINDINGS:\n{findings_text}"
     )
     try:
-        raw = get_completion(
-            body["provider"], body["api_key"], prompt, model=body.get("model")
-        )
+        raw = get_completion(body["provider"], body["api_key"], prompt, model=body.get("model"))
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
     except RuntimeError as exc:
@@ -253,12 +278,14 @@ def ai_prioritise():
     except (json.JSONDecodeError, TypeError):
         prioritised = raw
 
-    return jsonify({
-        "prioritised_findings": prioritised,
-        "sources": sources,
-        "provider": body["provider"],
-        "model": body.get("model"),
-    })
+    return jsonify(
+        {
+            "prioritised_findings": prioritised,
+            "sources": sources,
+            "provider": body["provider"],
+            "model": body.get("model"),
+        }
+    )
 
 
 @ai_bp.post("/api/ai/ask")
@@ -286,17 +313,57 @@ def ai_ask():
         f"CURRENT FINDINGS:\n{findings_text}\n\nQUESTION: {question}"
     )
     try:
-        answer = get_completion(
-            body["provider"], body["api_key"], prompt, model=body.get("model")
-        )
+        answer = get_completion(body["provider"], body["api_key"], prompt, model=body.get("model"))
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
     except RuntimeError as exc:
         return jsonify({"error": str(exc)}), 502
 
-    return jsonify({
-        "answer": answer,
-        "sources": sources,
-        "provider": body["provider"],
-        "model": body.get("model"),
-    })
+    return jsonify(
+        {
+            "answer": answer,
+            "sources": sources,
+            "provider": body["provider"],
+            "model": body.get("model"),
+        }
+    )
+
+
+@ai_bp.post("/api/ai/threat-simulation")
+def ai_threat_simulation():
+    body, error = _read_request()
+    if error:
+        return error
+    findings = body.get("findings", [])
+    if not isinstance(findings, list):
+        return jsonify({"error": "findings must be a list"}), 400
+    if not findings:
+        return jsonify({"error": "findings must not be empty"}), 400
+
+    findings_text = _findings_to_text(findings)
+    try:
+        context, sources = _context_for(findings_text)
+    except VectorStoreNotBuilt as exc:
+        return jsonify({"error": str(exc)}), 503
+
+    prompt = _build_threat_simulation_prompt(findings_text, context)
+    try:
+        raw = get_completion(body["provider"], body["api_key"], prompt, model=body.get("model"))
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except RuntimeError as exc:
+        return jsonify({"error": str(exc)}), 502
+
+    try:
+        simulation = json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        simulation = raw
+
+    return jsonify(
+        {
+            "threat_simulation": simulation,
+            "sources": sources,
+            "provider": body["provider"],
+            "model": body.get("model"),
+        }
+    )

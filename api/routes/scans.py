@@ -2,6 +2,7 @@
 
 import logging
 import os
+import uuid
 from flask import Blueprint, g, jsonify, request
 
 from api.models.finding import DatabaseManager
@@ -33,50 +34,49 @@ def list_scans():
         return jsonify({"error": "Failed to retrieve scans", "detail": str(exc)}), 500
 
 
+@scans_bp.get("/api/scans/<scan_id>")
+def get_scan_status(scan_id):
+    """Return the details and status of a specific scan."""
+    try:
+        db = _get_db()
+        scan = db.get_scan(scan_id)
+        if not scan:
+            return jsonify({"error": "Scan not found"}), 404
+        return jsonify(scan)
+    except Exception as exc:
+        logger.error("Failed to get scan status: %s", exc)
+        return jsonify({"error": "Database error", "detail": str(exc)}), 500
+
+
 @scans_bp.post("/api/scans/trigger")
 def trigger_scan():
-    """Trigger a synchronous scan against the configured subscription.
+    """Trigger an asynchronous scan against the configured subscription.
 
     Accepts an optional JSON body with ``subscription_id``. Falls back to the
     ``AZURE_SUBSCRIPTION_ID`` environment variable if not provided.
 
-    Note: For production use, replace this with an async task queue (e.g.
-    Celery or Azure Functions) to avoid request timeouts on large subscriptions.
+    Returns 202 Accepted with the scan_id immediately.
     """
     try:
-        from scanner.engine import ScanEngine
-    except ImportError:
-        return jsonify({"error": "Scanner module is not available"}), 500
-
-    try:
         body = request.get_json(silent=True) or {}
-        subscription_id = body.get("subscription_id") or os.environ.get(
-            "AZURE_SUBSCRIPTION_ID"
-        )
+        subscription_id = body.get("subscription_id") or os.environ.get("AZURE_SUBSCRIPTION_ID")
 
         if not subscription_id:
             return jsonify({"error": "subscription_id is required"}), 400
 
-        logger.info("Scan triggered for subscription %s", subscription_id)
-
-        try:
-            engine = ScanEngine(subscription_id)
-            result = engine.run_scan()
-        except Exception as exc:
-            logger.error("Scan engine execution failed: %s", exc, exc_info=True)
-            return jsonify({"error": "Scan failed", "detail": str(exc)}), 500
-
-        if not isinstance(result, dict) or "scan_id" not in result:
-            return jsonify({"error": "Invalid scan result returned"}), 500
+        scan_id = str(uuid.uuid4())
+        logger.info("Async scan triggered for subscription %s (id: %s)", subscription_id, scan_id)
 
         try:
             db = _get_db()
-            db.save_scan(result)
+            db.create_pending_scan(scan_id, subscription_id)
         except Exception as exc:
-            logger.error("Failed to save scan result: %s", exc, exc_info=True)
-            return jsonify({"error": "Database save failed", "detail": str(exc)}), 500
+            logger.error("Failed to create pending scan: %s", exc, exc_info=True)
+            return jsonify({"error": "Database error", "detail": str(exc)}), 500
 
-        return jsonify(result), 201
+        return jsonify(
+            {"scan_id": scan_id, "status": "pending", "message": "Scan has been queued and will start shortly."}
+        ), 202
 
     except Exception as exc:
         logger.error("Critical error in trigger_scan route: %s", exc, exc_info=True)
@@ -88,14 +88,14 @@ def enrich_scan(scan_id):
     """Trigger CVE enrichment for an existing scan."""
     try:
         db = _get_db()
-        
+
         # Check current status to avoid redundant NVD calls
         scans = db.get_scans()
         current_scan = next((s for s in scans if str(s["scan_id"]) == scan_id), None)
-        
+
         if not current_scan:
             return jsonify({"error": "Scan not found"}), 404
-            
+
         status = current_scan.get("cve_enrichment_status")
         if status == "COMPLETED":
             return jsonify({"message": "Scan already enriched", "scan_id": scan_id}), 200
@@ -118,11 +118,7 @@ def enrich_scan(scan_id):
             db.update_scan_enrichment_status(scan_id, "FAILED")
             return jsonify({"error": "Enrichment failed", "detail": str(exc)}), 500
 
-        return jsonify({
-            "scan_id": scan_id,
-            "status": "COMPLETED",
-            "enriched_count": len(enriched)
-        })
+        return jsonify({"scan_id": scan_id, "status": "COMPLETED", "enriched_count": len(enriched)})
 
     except Exception as exc:
         logger.error("Failed to enrich scan %s: %s", scan_id, exc)

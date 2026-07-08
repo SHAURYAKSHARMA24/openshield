@@ -21,32 +21,55 @@ class VectorStoreNotBuilt(RuntimeError):
 
 def _get_collection():
     if chromadb is None:
-        raise VectorStoreNotBuilt(
-            "chromadb is not installed. Install it with 'pip install chromadb'."
-        )
+        raise VectorStoreNotBuilt("chromadb is not installed. Install it with 'pip install chromadb'.")
     if not VECTORSTORE_DIR.exists():
-        raise VectorStoreNotBuilt(
-            "Vector store not found. Run 'python ai/embed.py' first."
-        )
+        raise VectorStoreNotBuilt("Vector store not found. Run 'python ai/embed.py' first.")
     client = chromadb.PersistentClient(path=str(VECTORSTORE_DIR))
     try:
         return client.get_collection(COLLECTION_NAME)
     except Exception as exc:
-        raise VectorStoreNotBuilt(
-            "Vector store collection missing. Run 'python ai/embed.py' first."
-        ) from exc
+        raise VectorStoreNotBuilt("Vector store collection missing. Run 'python ai/embed.py' first.") from exc
 
 
 def retrieve(query, n_results=5):
     """Return the most relevant knowledge chunks for a query.
 
-    Each result is a dict with 'text' and 'source'.
+    Each result is a dict with 'text' and 'source_meta'.
     """
     collection = _get_collection()
     results = collection.query(query_texts=[query], n_results=n_results)
+
     documents = results.get("documents", [[]])[0]
     metadatas = results.get("metadatas", [[]])[0]
+
     chunks = []
     for text, meta in zip(documents, metadatas):
-        chunks.append({"text": text, "source": (meta or {}).get("source", "")})
+        meta = meta or {}
+
+        # Build structured source for the frontend
+        source_id = "General"
+        source_resource = ""
+        source_type = meta.get("source", "unknown")
+
+        if source_type == "openShield_rule":
+            source_id = meta.get("rule_id", "Rule")
+            source_resource = meta.get("rule_name", "")
+        elif source_type == "claude_red_skill":
+            source_id = meta.get("skill_name", "Skill")
+        elif source_type == "compliance_framework":
+            source_id = f"{meta.get('framework', 'Compliance')} {meta.get('control_id', '')}".strip()
+            source_resource = meta.get("control_name", "")
+
+        chunks.append(
+            {
+                "text": text,
+                "source": source_id,  # for LLM prompt context
+                "source_meta": {
+                    "id": source_id,
+                    "type": source_type,
+                    "resource": source_resource,
+                    "file": meta.get("file", ""),
+                },
+            }
+        )
     return chunks
