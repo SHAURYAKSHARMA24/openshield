@@ -140,15 +140,11 @@ class MockAzureClient:
     # Compute — network interfaces & VM extensions                          #
     # ------------------------------------------------------------------ #
 
-    def set_network_interface(
-        self, resource_group: str, nic_name: str, nic: Any
-    ) -> "MockAzureClient":
+    def set_network_interface(self, resource_group: str, nic_name: str, nic: Any) -> "MockAzureClient":
         self._network_interfaces[(resource_group, nic_name)] = nic
         return self
 
-    def get_network_interface(
-        self, resource_group: str, nic_name: str
-    ) -> Optional[Any]:
+    def get_network_interface(self, resource_group: str, nic_name: str) -> Optional[Any]:
         return self._network_interfaces.get((resource_group, nic_name))
 
     def set_vm_extensions(
@@ -157,9 +153,7 @@ class MockAzureClient:
         self._vm_extensions[(resource_group, vm_name)] = extensions
         return self
 
-    def get_vm_extensions(
-        self, resource_group: str, vm_name: str
-    ) -> Optional[List[Any]]:
+    def get_vm_extensions(self, resource_group: str, vm_name: str) -> Optional[List[Any]]:
         # Default to an empty list (compliant-by-default) unless configured.
         return self._vm_extensions.get((resource_group, vm_name), [])
 
@@ -173,9 +167,7 @@ class MockAzureClient:
         self._storage_lifecycle[(resource_group, account_name)] = value
         return self
 
-    def get_storage_lifecycle_policy(
-        self, resource_group: str, account_name: str
-    ) -> Optional[bool]:
+    def get_storage_lifecycle_policy(self, resource_group: str, account_name: str) -> Optional[bool]:
         return self._storage_lifecycle.get((resource_group, account_name))
 
     def set_storage_service_logging(
@@ -184,9 +176,7 @@ class MockAzureClient:
         self._storage_logging[(resource_group, account_name, service)] = value
         return self
 
-    def get_storage_service_logging(
-        self, resource_group: str, account_name: str, service: str
-    ) -> Optional[bool]:
+    def get_storage_service_logging(self, resource_group: str, account_name: str, service: str) -> Optional[bool]:
         return self._storage_logging.get((resource_group, account_name, service))
 
     # ------------------------------------------------------------------ #
@@ -214,29 +204,21 @@ class MockAzureClient:
     def get_load_balancers(self) -> List[Any]:
         return self._load_balancers
 
-    def set_all_azure_firewalls(
-        self, firewalls: Optional[List[Any]]
-    ) -> "MockAzureClient":
+    def set_all_azure_firewalls(self, firewalls: Optional[List[Any]]) -> "MockAzureClient":
         self._all_azure_firewalls = firewalls
         return self
 
     def get_all_azure_firewalls(self) -> Optional[List[Any]]:
         return self._all_azure_firewalls
 
-    def set_vnet_peerings(
-        self, resource_group: str, vnet_name: str, peerings: List[Any]
-    ) -> "MockAzureClient":
+    def set_vnet_peerings(self, resource_group: str, vnet_name: str, peerings: List[Any]) -> "MockAzureClient":
         self._vnet_peerings[(resource_group, vnet_name)] = peerings
         return self
 
-    def get_vnet_peerings(
-        self, resource_group: str, vnet_name: str
-    ) -> List[Any]:
+    def get_vnet_peerings(self, resource_group: str, vnet_name: str) -> List[Any]:
         return self._vnet_peerings.get((resource_group, vnet_name), [])
 
-    def set_nsg_flow_logs(
-        self, resource_group: str, flow_logs: List[Any]
-    ) -> "MockAzureClient":
+    def set_nsg_flow_logs(self, resource_group: str, flow_logs: List[Any]) -> "MockAzureClient":
         # NOTE: az_net_012 calls get_nsg_flow_logs(resource_group) with a single
         # argument and iterates the result. This mock matches that *expected*
         # contract so the rule's detection logic can be exercised. The real
@@ -269,15 +251,11 @@ class MockAzureClient:
     def get_dns_zones(self) -> List[Any]:
         return self._dns_zones
 
-    def set_dns_record_sets(
-        self, resource_group: str, zone_name: str, record_sets: List[Any]
-    ) -> "MockAzureClient":
+    def set_dns_record_sets(self, resource_group: str, zone_name: str, record_sets: List[Any]) -> "MockAzureClient":
         self._dns_record_sets[(resource_group, zone_name)] = record_sets
         return self
 
-    def get_dns_record_sets(
-        self, resource_group: str, zone_name: str
-    ) -> List[Any]:
+    def get_dns_record_sets(self, resource_group: str, zone_name: str) -> List[Any]:
         return self._dns_record_sets.get((resource_group, zone_name), [])
 
     # ------------------------------------------------------------------ #
@@ -304,40 +282,28 @@ class MockAzureClient:
         self._pg_flex_parameters[(resource_group, server_name)] = parameters
         return self
 
-    def get_postgresql_flexible_server_parameters(
-        self, resource_group: str, server_name: str
-    ) -> List[Any]:
+    def get_postgresql_flexible_server_parameters(self, resource_group: str, server_name: str) -> List[Any]:
         return self._pg_flex_parameters.get((resource_group, server_name), [])
 
-    def set_sql_server_auditing_policy(
-        self, resource_group: str, server_name: str, policy: Any
-    ) -> "MockAzureClient":
+    def set_sql_server_auditing_policy(self, resource_group: str, server_name: str, policy: Any) -> "MockAzureClient":
         self._sql_auditing[(resource_group, server_name)] = policy
         return self
 
-    def get_sql_server_auditing_policy(
-        self, resource_group: str, server_name: str
-    ) -> Optional[Any]:
-        return self._sql_auditing.get(
-            (resource_group, server_name), self._sql_auditing_default
-        )
+    def get_sql_server_auditing_policy(self, resource_group: str, server_name: str) -> Optional[Any]:
+        return self._sql_auditing.get((resource_group, server_name), self._sql_auditing_default)
 
     # ------------------------------------------------------------------ #
     # Key Vault — certificates & keys (data plane)                          #
     # ------------------------------------------------------------------ #
 
-    def set_key_vault_certificates(
-        self, vault_name: str, certificates: List[Any]
-    ) -> "MockAzureClient":
+    def set_key_vault_certificates(self, vault_name: str, certificates: List[Any]) -> "MockAzureClient":
         self._kv_certificates[vault_name] = certificates
         return self
 
     def get_key_vault_certificates(self, vault_name: str) -> List[Any]:
         return self._kv_certificates.get(vault_name, [])
 
-    def set_key_vault_keys(
-        self, vault_name: str, keys: List[Any]
-    ) -> "MockAzureClient":
+    def set_key_vault_keys(self, vault_name: str, keys: List[Any]) -> "MockAzureClient":
         self._kv_keys[vault_name] = keys
         return self
 
@@ -348,18 +314,14 @@ class MockAzureClient:
     # Monitoring & Identity                                                 #
     # ------------------------------------------------------------------ #
 
-    def set_diagnostic_settings(
-        self, resource_id: str, value: Optional[bool]
-    ) -> "MockAzureClient":
+    def set_diagnostic_settings(self, resource_id: str, value: Optional[bool]) -> "MockAzureClient":
         self._diagnostic_settings[resource_id] = value
         return self
 
     def get_diagnostic_settings(self, resource_id: str) -> Optional[bool]:
         return self._diagnostic_settings.get(resource_id, self._diagnostic_default)
 
-    def set_conditional_access_policies(
-        self, policies: List[Any]
-    ) -> "MockAzureClient":
+    def set_conditional_access_policies(self, policies: List[Any]) -> "MockAzureClient":
         self._conditional_access_policies = policies
         return self
 

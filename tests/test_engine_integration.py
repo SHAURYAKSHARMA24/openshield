@@ -36,17 +36,11 @@ def _patch_engine_client(monkeypatch, client):
 
 
 def _storage_id(name):
-    return (
-        f"/subscriptions/{_SUB}/resourceGroups/{_RG}"
-        f"/providers/Microsoft.Storage/storageAccounts/{name}"
-    )
+    return f"/subscriptions/{_SUB}/resourceGroups/{_RG}/providers/Microsoft.Storage/storageAccounts/{name}"
 
 
 def _nsg_id(name):
-    return (
-        f"/subscriptions/{_SUB}/resourceGroups/{_RG}"
-        f"/providers/Microsoft.Network/networkSecurityGroups/{name}"
-    )
+    return f"/subscriptions/{_SUB}/resourceGroups/{_RG}/providers/Microsoft.Network/networkSecurityGroups/{name}"
 
 
 def test_engine_loads_all_45_rules(monkeypatch):
@@ -64,11 +58,18 @@ def test_engine_run_scan_result_is_self_consistent(monkeypatch):
     """total_findings, the findings list, and score must be mutually consistent."""
     client = _offline_mock()
     # Seed a couple of flagged resources so the scan is non-empty but bounded.
-    client.set_storage_accounts([
-        make_resource(id=_storage_id("public-sa"), name="public-sa",
-                      allow_blob_public_access=True, enable_https_traffic_only=False,
-                      sku=make_resource(name="Standard_LRS"), location="eastus"),
-    ])
+    client.set_storage_accounts(
+        [
+            make_resource(
+                id=_storage_id("public-sa"),
+                name="public-sa",
+                allow_blob_public_access=True,
+                enable_https_traffic_only=False,
+                sku=make_resource(name="Standard_LRS"),
+                location="eastus",
+            ),
+        ]
+    )
     _patch_engine_client(monkeypatch, client)
 
     eng = ScanEngine(_SUB)
@@ -81,9 +82,7 @@ def test_engine_run_scan_result_is_self_consistent(monkeypatch):
 
     # Score is 100 minus severity-weighted deductions, floored at 0.
     weights = {"HIGH": 10, "MEDIUM": 5, "LOW": 2}
-    expected_deduction = sum(
-        weights.get((f.get("severity") or "").upper(), 0) for f in result["findings"]
-    )
+    expected_deduction = sum(weights.get((f.get("severity") or "").upper(), 0) for f in result["findings"])
     assert result["score"] == max(0, 100 - expected_deduction)
     assert 0 <= result["score"] <= 100
 

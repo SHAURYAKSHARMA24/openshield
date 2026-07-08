@@ -80,12 +80,15 @@ def test_kv_002_noncompliant_returns_one_finding(mock_azure, subscription_id):
 
 def _vault_with_props(name, **prop_kwargs):
     return make_resource(
-        id=_kv_id(name), name=name, location="eastus",
+        id=_kv_id(name),
+        name=name,
+        location="eastus",
         properties=make_resource(**prop_kwargs),
     )
 
 
 # ── AZ-KV-001: soft delete disabled ─────────────────────────────────────────
+
 
 def test_kv_001_compliant_returns_no_findings(mock_azure, subscription_id):
     mock_azure.set_key_vaults([_vault_with_props("kv-sd-on", enable_soft_delete=True)])
@@ -93,9 +96,7 @@ def test_kv_001_compliant_returns_no_findings(mock_azure, subscription_id):
 
 
 def test_kv_001_noncompliant_returns_one_finding(mock_azure, subscription_id):
-    mock_azure.set_key_vaults([
-        _vault_with_props("kv-sd-off", enable_soft_delete=False, enable_purge_protection=False)
-    ])
+    mock_azure.set_key_vaults([_vault_with_props("kv-sd-off", enable_soft_delete=False, enable_purge_protection=False)])
     findings = az_kv_001.scan(mock_azure, subscription_id)
     assert len(findings) == 1
     assert findings[0]["rule_id"] == "AZ-KV-001"
@@ -104,6 +105,7 @@ def test_kv_001_noncompliant_returns_one_finding(mock_azure, subscription_id):
 
 
 # ── AZ-KV-003: diagnostic logging not enabled ───────────────────────────────
+
 
 def test_kv_003_compliant_returns_no_findings(mock_azure, subscription_id):
     vault = _vault_with_props("kv-diag-on")
@@ -132,6 +134,7 @@ def test_kv_003_indeterminate_status_skips(mock_azure, subscription_id):
 
 # ── AZ-KV-004: purge protection disabled ────────────────────────────────────
 
+
 def test_kv_004_compliant_returns_no_findings(mock_azure, subscription_id):
     mock_azure.set_key_vaults([_vault_with_props("kv-pp-on", enable_purge_protection=True)])
     assert az_kv_004.scan(mock_azure, subscription_id) == []
@@ -146,6 +149,7 @@ def test_kv_004_noncompliant_returns_one_finding(mock_azure, subscription_id):
 
 
 # ── AZ-KV-005: certificate expiring within 30 days ──────────────────────────
+
 
 def test_kv_005_compliant_far_future_expiry_returns_no_findings(mock_azure, subscription_id):
     vault = _vault_with_props("kv-cert-ok")

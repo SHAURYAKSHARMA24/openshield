@@ -95,6 +95,7 @@ def test_stor_002_noncompliant_returns_one_finding(mock_azure, subscription_id):
 
 # ── AZ-STOR-003: no lifecycle management policy ─────────────────────────────
 
+
 def test_stor_003_compliant_returns_no_findings(mock_azure, subscription_id):
     acct = make_resource(id=_storage_id("sa-lifecycle"), name="sa-lifecycle", location="eastus")
     mock_azure.set_storage_accounts([acct])
@@ -122,6 +123,7 @@ def test_stor_003_indeterminate_skips(mock_azure, subscription_id):
 
 # ── AZ-STOR-004: diagnostic logging disabled (per blob/queue/table) ─────────
 
+
 def test_stor_004_compliant_all_services_logged_returns_no_findings(mock_azure, subscription_id):
     acct = make_resource(id=_storage_id("sa-logged"), name="sa-logged", location="eastus")
     mock_azure.set_storage_accounts([acct])
@@ -145,9 +147,12 @@ def test_stor_004_noncompliant_blob_unlogged_returns_one_finding(mock_azure, sub
 
 # ── AZ-STOR-005: not geo-redundant ──────────────────────────────────────────
 
+
 def test_stor_005_compliant_grs_returns_no_findings(mock_azure, subscription_id):
     acct = make_resource(
-        id=_storage_id("sa-grs"), name="sa-grs", location="eastus",
+        id=_storage_id("sa-grs"),
+        name="sa-grs",
+        location="eastus",
         sku=make_resource(name="Standard_GRS"),
     )
     mock_azure.set_storage_accounts([acct])
@@ -156,7 +161,9 @@ def test_stor_005_compliant_grs_returns_no_findings(mock_azure, subscription_id)
 
 def test_stor_005_noncompliant_lrs_returns_one_finding(mock_azure, subscription_id):
     acct = make_resource(
-        id=_storage_id("sa-lrs"), name="sa-lrs", location="eastus",
+        id=_storage_id("sa-lrs"),
+        name="sa-lrs",
+        location="eastus",
         sku=make_resource(name="Standard_LRS"),
     )
     mock_azure.set_storage_accounts([acct])

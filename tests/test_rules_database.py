@@ -74,18 +74,18 @@ def test_db_004_no_firewall_rules_returns_no_findings(mock_azure, subscription_i
 
 
 def _pg_id(name, provider="Microsoft.DBforPostgreSQL/servers"):
-    return (
-        f"/subscriptions/{_SUB}/resourceGroups/{_RG}"
-        f"/providers/{provider}/{name}"
-    )
+    return f"/subscriptions/{_SUB}/resourceGroups/{_RG}/providers/{provider}/{name}"
 
 
 # ── AZ-DB-001: PostgreSQL single-server public network access ───────────────
 
+
 def test_db_001_compliant_returns_no_findings(mock_azure, subscription_id):
     server = make_resource(
-        id=_pg_id("pg-private"), name="pg-private",
-        public_network_access="Disabled", location="eastus",
+        id=_pg_id("pg-private"),
+        name="pg-private",
+        public_network_access="Disabled",
+        location="eastus",
     )
     mock_azure.set_postgresql_servers([server])
     assert az_db_001.scan(mock_azure, subscription_id) == []
@@ -93,8 +93,10 @@ def test_db_001_compliant_returns_no_findings(mock_azure, subscription_id):
 
 def test_db_001_noncompliant_returns_one_finding(mock_azure, subscription_id):
     server = make_resource(
-        id=_pg_id("pg-public"), name="pg-public",
-        public_network_access="Enabled", location="eastus",
+        id=_pg_id("pg-public"),
+        name="pg-public",
+        public_network_access="Enabled",
+        location="eastus",
     )
     mock_azure.set_postgresql_servers([server])
     findings = az_db_001.scan(mock_azure, subscription_id)
@@ -105,6 +107,7 @@ def test_db_001_noncompliant_returns_one_finding(mock_azure, subscription_id):
 
 
 # ── AZ-DB-002: Azure SQL server auditing disabled ───────────────────────────
+
 
 def test_db_002_compliant_returns_no_findings(mock_azure, subscription_id):
     server = make_resource(id=_sql_id("sql-audited"), name="sql-audited")
@@ -126,14 +129,17 @@ def test_db_002_noncompliant_returns_one_finding(mock_azure, subscription_id):
 
 # ── AZ-DB-003: PostgreSQL flexible server SSL enforcement disabled ──────────
 
+
 def test_db_003_compliant_returns_no_findings(mock_azure, subscription_id):
     server = make_resource(
         id=_pg_id("pgflex-ssl", "Microsoft.DBforPostgreSQL/flexibleServers"),
-        name="pgflex-ssl", location="eastus",
+        name="pgflex-ssl",
+        location="eastus",
     )
     mock_azure.set_postgresql_flexible_servers([server])
     mock_azure.set_postgresql_flexible_server_parameters(
-        _RG, "pgflex-ssl",
+        _RG,
+        "pgflex-ssl",
         [make_resource(name="require_secure_transport", value="on")],
     )
     assert az_db_003.scan(mock_azure, subscription_id) == []
@@ -142,11 +148,13 @@ def test_db_003_compliant_returns_no_findings(mock_azure, subscription_id):
 def test_db_003_noncompliant_returns_one_finding(mock_azure, subscription_id):
     server = make_resource(
         id=_pg_id("pgflex-nossl", "Microsoft.DBforPostgreSQL/flexibleServers"),
-        name="pgflex-nossl", location="eastus",
+        name="pgflex-nossl",
+        location="eastus",
     )
     mock_azure.set_postgresql_flexible_servers([server])
     mock_azure.set_postgresql_flexible_server_parameters(
-        _RG, "pgflex-nossl",
+        _RG,
+        "pgflex-nossl",
         [make_resource(name="require_secure_transport", value="off")],
     )
     findings = az_db_003.scan(mock_azure, subscription_id)

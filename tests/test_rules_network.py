@@ -28,14 +28,15 @@ from tests.helpers.mock_azure import make_resource
 def _install_network_client(monkeypatch, **collections):
     """Patch azure.mgmt.network.NetworkManagementClient with a fake exposing
     the given sub-resources, each as ``<attr>.list_all() -> list``."""
+
     def make_client(*args, **kwargs):
         ns = {}
         for attr, items in collections.items():
             ns[attr] = SimpleNamespace(list_all=lambda items=items: list(items))
         return SimpleNamespace(**ns)
-    monkeypatch.setattr(
-        "azure.mgmt.network.NetworkManagementClient", make_client
-    )
+
+    monkeypatch.setattr("azure.mgmt.network.NetworkManagementClient", make_client)
+
 
 _REQUIRED_FIELDS = {
     "rule_id",
@@ -145,17 +146,16 @@ def test_net_002_noncompliant_returns_one_finding(mock_azure, subscription_id):
 
 
 def _vnet_id(name):
-    return (
-        f"/subscriptions/{_SUB}/resourceGroups/{_RG}"
-        f"/providers/Microsoft.Network/virtualNetworks/{name}"
-    )
+    return f"/subscriptions/{_SUB}/resourceGroups/{_RG}/providers/Microsoft.Network/virtualNetworks/{name}"
 
 
 # ── AZ-NET-003: unrestricted inbound on 443 ─────────────────────────────────
 
+
 def test_net_003_compliant_returns_no_findings(mock_azure, subscription_id):
     nsg = make_resource(
-        id=_nsg_id("nsg-443-ok"), name="nsg-443-ok",
+        id=_nsg_id("nsg-443-ok"),
+        name="nsg-443-ok",
         security_rules=[_allow_rule("Allow443", "443", "10.0.0.0/24")],
     )
     mock_azure.set_network_security_groups([nsg])
@@ -164,7 +164,8 @@ def test_net_003_compliant_returns_no_findings(mock_azure, subscription_id):
 
 def test_net_003_noncompliant_returns_one_finding(mock_azure, subscription_id):
     nsg = make_resource(
-        id=_nsg_id("nsg-443-open"), name="nsg-443-open",
+        id=_nsg_id("nsg-443-open"),
+        name="nsg-443-open",
         security_rules=[_open_allow_rule("Allow443Internet", "443")],
     )
     mock_azure.set_network_security_groups([nsg])
@@ -176,9 +177,11 @@ def test_net_003_noncompliant_returns_one_finding(mock_azure, subscription_id):
 
 # ── AZ-NET-004: NSG with no rules ───────────────────────────────────────────
 
+
 def test_net_004_compliant_returns_no_findings(mock_azure, subscription_id):
     nsg = make_resource(
-        id=_nsg_id("nsg-has-rules"), name="nsg-has-rules",
+        id=_nsg_id("nsg-has-rules"),
+        name="nsg-has-rules",
         security_rules=[_allow_rule("AllowHTTPS", "443")],
     )
     mock_azure.set_network_security_groups([nsg])
@@ -196,9 +199,11 @@ def test_net_004_noncompliant_returns_one_finding(mock_azure, subscription_id):
 
 # ── AZ-NET-005: VNet without DDoS protection ────────────────────────────────
 
+
 def test_net_005_compliant_returns_no_findings(mock_azure, subscription_id):
     vnet = make_resource(
-        id=_vnet_id("vnet-ddos"), name="vnet-ddos",
+        id=_vnet_id("vnet-ddos"),
+        name="vnet-ddos",
         ddos_protection_plan=make_resource(id="plan1"),
         enable_ddos_protection=True,
     )
@@ -208,8 +213,10 @@ def test_net_005_compliant_returns_no_findings(mock_azure, subscription_id):
 
 def test_net_005_noncompliant_returns_one_finding(mock_azure, subscription_id):
     vnet = make_resource(
-        id=_vnet_id("vnet-noddos"), name="vnet-noddos",
-        ddos_protection_plan=None, enable_ddos_protection=False,
+        id=_vnet_id("vnet-noddos"),
+        name="vnet-noddos",
+        ddos_protection_plan=None,
+        enable_ddos_protection=False,
     )
     mock_azure.set_virtual_networks([vnet])
     findings = az_net_005.scan(mock_azure, subscription_id)
@@ -220,10 +227,13 @@ def test_net_005_noncompliant_returns_one_finding(mock_azure, subscription_id):
 
 # ── AZ-NET-006: unassociated public IP ──────────────────────────────────────
 
+
 def test_net_006_compliant_returns_no_findings(mock_azure, subscription_id):
     pip = make_resource(
-        id="/pip/associated", name="pip-associated",
-        ip_configuration=make_resource(id="nic-ipcfg"), nat_gateway=None,
+        id="/pip/associated",
+        name="pip-associated",
+        ip_configuration=make_resource(id="nic-ipcfg"),
+        nat_gateway=None,
     )
     mock_azure.set_public_ip_addresses([pip])
     assert az_net_006.scan(mock_azure, subscription_id) == []
@@ -231,9 +241,12 @@ def test_net_006_compliant_returns_no_findings(mock_azure, subscription_id):
 
 def test_net_006_noncompliant_returns_one_finding(mock_azure, subscription_id):
     pip = make_resource(
-        id="/pip/orphan", name="pip-orphan",
-        ip_configuration=None, nat_gateway=None,
-        ip_address="20.1.2.3", sku=make_resource(name="Standard"),
+        id="/pip/orphan",
+        name="pip-orphan",
+        ip_configuration=None,
+        nat_gateway=None,
+        ip_address="20.1.2.3",
+        sku=make_resource(name="Standard"),
     )
     mock_azure.set_public_ip_addresses([pip])
     findings = az_net_006.scan(mock_azure, subscription_id)
@@ -244,9 +257,12 @@ def test_net_006_noncompliant_returns_one_finding(mock_azure, subscription_id):
 
 # ── AZ-NET-007: Application Gateway without WAF (SDK) ────────────────────────
 
+
 def test_net_007_compliant_returns_no_findings(mock_azure, subscription_id, monkeypatch):
     agw = make_resource(
-        id="/agw1", name="agw-waf", location="eastus",
+        id="/agw1",
+        name="agw-waf",
+        location="eastus",
         sku=make_resource(name="WAF_v2"),
         web_application_firewall_configuration=make_resource(enabled=True),
     )
@@ -256,7 +272,9 @@ def test_net_007_compliant_returns_no_findings(mock_azure, subscription_id, monk
 
 def test_net_007_noncompliant_returns_one_finding(mock_azure, subscription_id, monkeypatch):
     agw = make_resource(
-        id="/agw2", name="agw-nowaf", location="eastus",
+        id="/agw2",
+        name="agw-nowaf",
+        location="eastus",
         sku=make_resource(name="Standard_v2"),
         web_application_firewall_configuration=None,
     )
@@ -269,9 +287,12 @@ def test_net_007_noncompliant_returns_one_finding(mock_azure, subscription_id, m
 
 # ── AZ-NET-008: Load balancer with no backend pool (accessor) ───────────────
 
+
 def test_net_008_compliant_returns_no_findings(mock_azure, subscription_id):
     lb = make_resource(
-        id="/lb1", name="lb-ok", location="eastus",
+        id="/lb1",
+        name="lb-ok",
+        location="eastus",
         backend_address_pools=[make_resource(name="pool1")],
     )
     mock_azure.set_load_balancers([lb])
@@ -279,9 +300,7 @@ def test_net_008_compliant_returns_no_findings(mock_azure, subscription_id):
 
 
 def test_net_008_noncompliant_returns_one_finding(mock_azure, subscription_id):
-    lb = make_resource(
-        id="/lb2", name="lb-empty", location="eastus", backend_address_pools=[]
-    )
+    lb = make_resource(id="/lb2", name="lb-empty", location="eastus", backend_address_pools=[])
     mock_azure.set_load_balancers([lb])
     findings = az_net_008.scan(mock_azure, subscription_id)
     assert len(findings) == 1
@@ -298,10 +317,14 @@ def test_net_008_noncompliant_returns_one_finding(mock_azure, subscription_id):
 # negative). The fake client below provides list_all() so these tests can still
 # validate the rule's intended IKEv1 detection logic — see the validation report.
 
+
 def test_net_009_compliant_returns_no_findings(mock_azure, subscription_id, monkeypatch):
     conn = make_resource(
-        id="/conn1", name="conn-ikev2", location="eastus",
-        connection_protocol="IKEv2", connection_type="IPsec",
+        id="/conn1",
+        name="conn-ikev2",
+        location="eastus",
+        connection_protocol="IKEv2",
+        connection_type="IPsec",
     )
     _install_network_client(monkeypatch, virtual_network_gateway_connections=[conn])
     assert az_net_009.scan(mock_azure, subscription_id) == []
@@ -309,8 +332,11 @@ def test_net_009_compliant_returns_no_findings(mock_azure, subscription_id, monk
 
 def test_net_009_noncompliant_returns_one_finding(mock_azure, subscription_id, monkeypatch):
     conn = make_resource(
-        id="/conn2", name="conn-ikev1", location="eastus",
-        connection_protocol="IKEv1", connection_type="IPsec",
+        id="/conn2",
+        name="conn-ikev1",
+        location="eastus",
+        connection_protocol="IKEv1",
+        connection_type="IPsec",
     )
     _install_network_client(monkeypatch, virtual_network_gateway_connections=[conn])
     findings = az_net_009.scan(mock_azure, subscription_id)
@@ -321,14 +347,19 @@ def test_net_009_noncompliant_returns_one_finding(mock_azure, subscription_id, m
 
 # ── AZ-NET-010: subnet with no NSG (SDK) ────────────────────────────────────
 
+
 def test_net_010_compliant_returns_no_findings(mock_azure, subscription_id, monkeypatch):
     vnet = make_resource(
-        id=_vnet_id("vnet-subnets"), name="vnet-subnets",
-        subnets=[make_resource(
-            name="app-subnet", id="/subnet/app",
-            network_security_group=make_resource(id="nsg1"),
-            address_prefix="10.0.1.0/24",
-        )],
+        id=_vnet_id("vnet-subnets"),
+        name="vnet-subnets",
+        subnets=[
+            make_resource(
+                name="app-subnet",
+                id="/subnet/app",
+                network_security_group=make_resource(id="nsg1"),
+                address_prefix="10.0.1.0/24",
+            )
+        ],
     )
     _install_network_client(monkeypatch, virtual_networks=[vnet])
     assert az_net_010.scan(mock_azure, subscription_id) == []
@@ -336,11 +367,16 @@ def test_net_010_compliant_returns_no_findings(mock_azure, subscription_id, monk
 
 def test_net_010_noncompliant_returns_one_finding(mock_azure, subscription_id, monkeypatch):
     vnet = make_resource(
-        id=_vnet_id("vnet-bare"), name="vnet-bare",
-        subnets=[make_resource(
-            name="bare-subnet", id="/subnet/bare",
-            network_security_group=None, address_prefix="10.0.2.0/24",
-        )],
+        id=_vnet_id("vnet-bare"),
+        name="vnet-bare",
+        subnets=[
+            make_resource(
+                name="bare-subnet",
+                id="/subnet/bare",
+                network_security_group=None,
+                address_prefix="10.0.2.0/24",
+            )
+        ],
     )
     _install_network_client(monkeypatch, virtual_networks=[vnet])
     findings = az_net_010.scan(mock_azure, subscription_id)
@@ -352,17 +388,23 @@ def test_net_010_noncompliant_returns_one_finding(mock_azure, subscription_id, m
 def test_net_010_skips_reserved_subnets(mock_azure, subscription_id, monkeypatch):
     """Gateway/Firewall/Bastion subnets without an NSG must not be flagged."""
     vnet = make_resource(
-        id=_vnet_id("vnet-gw"), name="vnet-gw",
-        subnets=[make_resource(
-            name="GatewaySubnet", id="/subnet/gw",
-            network_security_group=None, address_prefix="10.0.3.0/24",
-        )],
+        id=_vnet_id("vnet-gw"),
+        name="vnet-gw",
+        subnets=[
+            make_resource(
+                name="GatewaySubnet",
+                id="/subnet/gw",
+                network_security_group=None,
+                address_prefix="10.0.3.0/24",
+            )
+        ],
     )
     _install_network_client(monkeypatch, virtual_networks=[vnet])
     assert az_net_010.scan(mock_azure, subscription_id) == []
 
 
 # ── AZ-NET-011: Network Watcher not enabled in all regions ──────────────────
+
 
 def test_net_011_compliant_returns_no_findings(mock_azure, subscription_id):
     mock_azure.set_regions_with_resources(["eastus", "westus"])
@@ -387,13 +429,12 @@ def test_net_011_noncompliant_returns_finding_per_unmonitored_region(mock_azure,
 # The mock provides the expected method, so these tests validate the rule's
 # *intended* detection logic and isolate the missing-method bug as root cause.
 
+
 def test_net_012_compliant_returns_no_findings(mock_azure, subscription_id):
     nsg_id = _nsg_id("nsg-flowlogs")
     nsg = make_resource(id=nsg_id, name="nsg-flowlogs")
     mock_azure.set_network_security_groups([nsg])
-    mock_azure.set_nsg_flow_logs(
-        _RG, [make_resource(target_resource_id=nsg_id, enabled=True)]
-    )
+    mock_azure.set_nsg_flow_logs(_RG, [make_resource(target_resource_id=nsg_id, enabled=True)])
     assert az_net_012.scan(mock_azure, subscription_id) == []
 
 
@@ -410,11 +451,12 @@ def test_net_012_noncompliant_returns_one_finding(mock_azure, subscription_id):
 
 # ── AZ-NET-013: Azure Firewall not enabled on VNet ──────────────────────────
 
+
 def test_net_013_compliant_returns_no_findings(mock_azure, subscription_id):
     vnet_id = _vnet_id("vnet-fw")
-    fw = make_resource(ip_configurations=[
-        make_resource(subnet=make_resource(id=f"{vnet_id}/subnets/AzureFirewallSubnet"))
-    ])
+    fw = make_resource(
+        ip_configurations=[make_resource(subnet=make_resource(id=f"{vnet_id}/subnets/AzureFirewallSubnet"))]
+    )
     mock_azure.set_all_azure_firewalls([fw])
     mock_azure.set_virtual_networks([make_resource(id=vnet_id, name="vnet-fw", location="eastus")])
     assert az_net_013.scan(mock_azure, subscription_id) == []
@@ -439,21 +481,22 @@ def test_net_013_firewall_listing_none_skips(mock_azure, subscription_id):
 
 # ── AZ-NET-014: VNet peering without gateway-transit restrictions ───────────
 
+
 def test_net_014_compliant_returns_no_findings(mock_azure, subscription_id):
     vnet = make_resource(id=_vnet_id("vnet-peer-ok"), name="vnet-peer-ok")
     mock_azure.set_virtual_networks([vnet])
-    mock_azure.set_vnet_peerings(_RG, "vnet-peer-ok", [
-        make_resource(name="peer1", allow_gateway_transit=False, use_remote_gateways=False)
-    ])
+    mock_azure.set_vnet_peerings(
+        _RG, "vnet-peer-ok", [make_resource(name="peer1", allow_gateway_transit=False, use_remote_gateways=False)]
+    )
     assert az_net_014.scan(mock_azure, subscription_id) == []
 
 
 def test_net_014_noncompliant_returns_one_finding(mock_azure, subscription_id):
     vnet = make_resource(id=_vnet_id("vnet-peer-bad"), name="vnet-peer-bad")
     mock_azure.set_virtual_networks([vnet])
-    mock_azure.set_vnet_peerings(_RG, "vnet-peer-bad", [
-        make_resource(name="peer1", allow_gateway_transit=True, use_remote_gateways=False)
-    ])
+    mock_azure.set_vnet_peerings(
+        _RG, "vnet-peer-bad", [make_resource(name="peer1", allow_gateway_transit=True, use_remote_gateways=False)]
+    )
     findings = az_net_014.scan(mock_azure, subscription_id)
     assert len(findings) == 1
     assert findings[0]["rule_id"] == "AZ-NET-014"
@@ -462,20 +505,22 @@ def test_net_014_noncompliant_returns_one_finding(mock_azure, subscription_id):
 
 # ── AZ-NET-015: public DNS zone exposing internal infrastructure ────────────
 
+
 def _dns_zone_id(name):
-    return (
-        f"/subscriptions/{_SUB}/resourceGroups/{_RG}"
-        f"/providers/Microsoft.Network/dnsZones/{name}"
-    )
+    return f"/subscriptions/{_SUB}/resourceGroups/{_RG}/providers/Microsoft.Network/dnsZones/{name}"
 
 
 def test_net_015_compliant_public_records_returns_no_findings(mock_azure, subscription_id):
     """A public zone with only public IPs and non-internal names is compliant."""
     zone = make_resource(id=_dns_zone_id("example.com"), name="example.com", zone_type="Public")
     mock_azure.set_dns_zones([zone])
-    mock_azure.set_dns_record_sets(_RG, "example.com", [
-        make_resource(name="www", a_records=[make_resource(ipv4_address="20.1.2.3")]),
-    ])
+    mock_azure.set_dns_record_sets(
+        _RG,
+        "example.com",
+        [
+            make_resource(name="www", a_records=[make_resource(ipv4_address="20.1.2.3")]),
+        ],
+    )
     assert az_net_015.scan(mock_azure, subscription_id) == []
 
 
@@ -483,9 +528,13 @@ def test_net_015_noncompliant_rfc1918_record_returns_one_finding(mock_azure, sub
     """A public zone with an A record pointing at an RFC1918 IP must flag."""
     zone = make_resource(id=_dns_zone_id("corp.example.com"), name="corp.example.com", zone_type="Public")
     mock_azure.set_dns_zones([zone])
-    mock_azure.set_dns_record_sets(_RG, "corp.example.com", [
-        make_resource(name="app", a_records=[make_resource(ipv4_address="10.0.0.5")]),
-    ])
+    mock_azure.set_dns_record_sets(
+        _RG,
+        "corp.example.com",
+        [
+            make_resource(name="app", a_records=[make_resource(ipv4_address="10.0.0.5")]),
+        ],
+    )
     findings = az_net_015.scan(mock_azure, subscription_id)
     assert len(findings) == 1
     assert findings[0]["rule_id"] == "AZ-NET-015"
@@ -497,7 +546,11 @@ def test_net_015_skips_private_zone(mock_azure, subscription_id):
     """A non-public (Private) zone must never be flagged, even with RFC1918 records."""
     zone = make_resource(id=_dns_zone_id("internal.local"), name="internal.local", zone_type="Private")
     mock_azure.set_dns_zones([zone])
-    mock_azure.set_dns_record_sets(_RG, "internal.local", [
-        make_resource(name="db", a_records=[make_resource(ipv4_address="10.0.0.9")]),
-    ])
+    mock_azure.set_dns_record_sets(
+        _RG,
+        "internal.local",
+        [
+            make_resource(name="db", a_records=[make_resource(ipv4_address="10.0.0.9")]),
+        ],
+    )
     assert az_net_015.scan(mock_azure, subscription_id) == []
