@@ -8,6 +8,14 @@ fail based on Render's *actual* deploy status, never on a fixed timer.
 - Deploy script: [`scripts/render_deploy.py`](../../scripts/render_deploy.py)
 - Workflow: [`.github/workflows/deploy.yml`](../../.github/workflows/deploy.yml)
 
+> **Deploys are currently MANUAL only.** The workflow runs solely via
+> `workflow_dispatch` (Actions → *Deploy API to Render* → *Run workflow*), where you
+> pick the target environment (`staging` or `production`). There is **no automatic
+> deploy on push or merge**: the staging/production Render services, database, and
+> secrets must exist first, so auto-deploying before that infrastructure is
+> provisioned would fail. Automatic push deploys can be re-enabled later once
+> maintainers confirm the staging/prod Render setup.
+
 ---
 
 ## 1. Service layout
@@ -21,14 +29,18 @@ The blueprint declares four services across two environments:
 | `openshield-api` | web | `main` | `./startup.sh` | Production API (Gunicorn) |
 | `openshield-worker` | worker | `main` | `python -m scanner.worker` | Production scan worker |
 
-### Staging / production branch mapping
+### Staging / production mapping
+
+The blueprint tracks branches so that, once synced, each Render service builds from
+the right branch:
 
 - `dev` → **staging** (`openshield-api-staging`, `openshield-worker-staging`)
 - `main` → **production** (`openshield-api`, `openshield-worker`)
 
-The staging and production APIs are served from **separate URLs** and CI health-checks
-and smoke-tests each branch against its own URL — they no longer share a fallback
-production URL.
+When you run the manual deploy workflow you choose the environment explicitly
+(`staging` or `production`); the workflow deploys that environment's service and
+health-checks/smoke-tests it against its own URL. Staging and production are served
+from **separate URLs** — they do not share a fallback production URL.
 
 ### The worker is a separate service
 
@@ -97,16 +109,19 @@ Render never overwrites the values you set in its dashboard.
 | `AZURE_CLIENT_SECRET` | Real-scan smoke tests |
 | `AZURE_TENANT_ID` | Real-scan smoke tests |
 
-The workflow selects the service id and API URL automatically from the branch:
-`dev` uses the staging pair, `main` uses the production pair.
+The workflow selects the service id and API URL from the environment you pick when
+running it: `staging` uses the staging pair, `production` uses the production pair.
 
 ---
 
 ## 4. How deterministic deploy polling works
 
-On push to `dev`/`main` (or manual `workflow_dispatch`), the workflow runs
+The deploy workflow is triggered **manually** (`workflow_dispatch`) with an
+`environment` input (`staging` or `production`) and an optional `run_smoke_tests`
+toggle. It runs
 [`scripts/render_deploy.py`](../../scripts/render_deploy.py) with `RENDER_API_KEY`,
-the branch's `RENDER_SERVICE_ID`, and `GITHUB_SHA`. The script:
+the selected environment's `RENDER_SERVICE_ID`, and `GITHUB_SHA` (the commit the
+workflow was dispatched on). The script:
 
 1. **Triggers a deploy** pinned to the commit CI built:
    `POST https://api.render.com/v1/services/{serviceId}/deploys` with
@@ -126,28 +141,29 @@ Poll interval and timeout are tunable via `RENDER_DEPLOY_POLL_SECONDS`
 never printed.
 
 Only after the deploy is live does the workflow run the **health gate**
-(`GET {API_URL}/health` must return 200) and the **smoke tests**
-(`tests/smoke_test.py`) against the branch-specific URL. On `dev`/`main`, any of
-these failing fails the workflow.
+(`GET {API_URL}/health` must return 200) and, when `run_smoke_tests` is enabled, the
+**smoke tests** (`tests/smoke_test.py`) against the selected environment's URL. Any
+of these failing fails the workflow run.
 
 ### Deploy control (`autoDeployTrigger`) and avoiding duplicate deploys
 
 `render.yaml` uses `autoDeployTrigger` (the current field; it replaces the
 deprecated `autoDeploy`):
 
-- **Web services → `autoDeployTrigger: "off"`.** GitHub Actions is the single
-  source of truth for web deploys, so Render's own auto-deploy is turned off. If it
-  were left on, every push would trigger *both* a Render auto-deploy and the
-  Actions-driven deploy of the same service — duplicate, racing deploys. `"off"` is
-  quoted because unquoted `off` is parsed as the boolean `false` by YAML.
-- **Worker services → `autoDeployTrigger: commit`.** The workers **auto-deploy on
-  every push** to their branch. Nothing else deploys them, so there is no
-  duplication, and they stay in sync with the web service. The health gate and
-  smoke tests do **not** cover the worker; if you want a worker deployed
-  deterministically (e.g. to gate or roll it back precisely), run
-  `scripts/render_deploy.py` with `RENDER_SERVICE_ID` set to the worker's service id.
+- **Web services → `autoDeployTrigger: "off"`.** The manual deploy workflow is the
+  single source of truth for web deploys, so Render's own auto-deploy is turned off.
+  This also avoids duplicate/racing deploys if a `push:` trigger is added later
+  (Render auto-deploy *and* the Actions deploy firing for the same commit). `"off"`
+  is quoted because unquoted `off` is parsed as the boolean `false` by YAML.
+- **Worker services → `autoDeployTrigger: commit`.** Once the blueprint is synced
+  and the worker infrastructure exists, the workers auto-deploy on push to their
+  branch; nothing else deploys them, so there is no duplication. Until that
+  infrastructure exists, no worker deploys happen at all. The health gate and smoke
+  tests do **not** cover the worker; to deploy a worker deterministically (e.g. to
+  gate or roll it back precisely), run `scripts/render_deploy.py` with
+  `RENDER_SERVICE_ID` set to the worker's service id.
 
-In short: **web = deployed by the workflow; worker = auto-deployed by Render on
+In short: **web = deployed by the manual workflow; worker = auto-deployed by Render on
 push** (and optionally by the same script).
 
 ---
@@ -165,8 +181,9 @@ API_URL="$STAGING_API_URL" JWT_SECRET="<staging-jwt-secret>" \
   python tests/smoke_test.py
 ```
 
-Confirm `dev` is serving staging: push a change to `dev`, watch the
-"Deploy API to Render" workflow reach *live*, then re-run the health check.
+Confirm staging is deployable: in **Actions → *Deploy API to Render* → *Run
+workflow***, choose `environment: staging` (from the `dev` branch), watch the deploy
+step reach *live*, then re-run the health check.
 
 ### Production
 
@@ -230,6 +247,10 @@ a bad commit changed worker behaviour.
   workflow. Gate on Render's real deploy status via `scripts/render_deploy.py`.
 - ❌ **Do not run the scan worker inside the web container** (no background
   subshell in `startup.sh`). It must stay a separate Render worker service.
+- ❌ **Do not add a `push:` trigger to the deploy workflow** until maintainers have
+  confirmed the staging/prod Render services, database, and secrets exist. Auto-
+  deploying before the infrastructure is provisioned will fail. Deploys stay manual
+  (`workflow_dispatch`) until then.
 - ❌ **Do not set the web services to `autoDeployTrigger: commit`** (or re-add the
   deprecated `autoDeploy: true`) while GitHub Actions also deploys them — that
   causes duplicate/racing deploys. Keep web services on `autoDeployTrigger: "off"`.
