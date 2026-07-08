@@ -445,21 +445,19 @@ else:
 # ── TC-33 to TC-35: CVE Enrichment endpoints ──────────────────────────────
 print("\n=== CVE Enrichment Endpoints ===")
 _scan_status, _scan_body = request("GET", "/api/scans")
-_scan_id = (
-    _scan_body[0].get("scan_id")
-    if _scan_status == 200 and isinstance(_scan_body, list) and _scan_body
-    else None
-)
+_scan_id = _scan_body[0].get("scan_id") if _scan_status == 200 and isinstance(_scan_body, list) and _scan_body else None
 if _scan_id is not None:
     test(
         f"TC-33 POST /api/scans/{_scan_id}/enrich returns 200",
-        "POST", f"/api/scans/{_scan_id}/enrich",
+        "POST",
+        f"/api/scans/{_scan_id}/enrich",
         lambda s, b: s == 200,
         body={},
     )
     test(
         f"TC-34 POST /api/scans/{_scan_id}/enrich returns status COMPLETED",
-        "POST", f"/api/scans/{_scan_id}/enrich",
+        "POST",
+        f"/api/scans/{_scan_id}/enrich",
         lambda s, b: b.get("status") == "COMPLETED",
         body={},
     )
@@ -469,22 +467,26 @@ else:
 
 test(
     "TC-35 GET /api/score/cve-summary returns status field",
-    "GET", "/api/score/cve-summary",
+    "GET",
+    "/api/score/cve-summary",
     lambda s, b: "status" in b,
 )
 test(
     "TC-24 GET /api/prioritization returns matrix and rankings keys",
-    "GET", "/api/prioritization",
+    "GET",
+    "/api/prioritization",
     lambda s, b: "matrix" in b and "rankings" in b and isinstance(b["matrix"], list),
 )
 test(
     "TC-25 GET /api/drift returns 200",
-    "GET", "/api/drift",
+    "GET",
+    "/api/drift",
     lambda s, b: s == 200,
 )
 test(
     "TC-26 GET /api/drift returns summary and events keys",
-    "GET", "/api/drift",
+    "GET",
+    "/api/drift",
     lambda s, b: "summary" in b and "events" in b and isinstance(b["events"], list),
 )
 
@@ -499,12 +501,14 @@ _finding_id = (
 if _finding_id is not None:
     test(
         f"TC-27 GET /api/findings/{_finding_id}/playbook returns 200",
-        "GET", f"/api/findings/{_finding_id}/playbook",
+        "GET",
+        f"/api/findings/{_finding_id}/playbook",
         lambda s, b: s == 200,
     )
     test(
         f"TC-28 GET /api/findings/{_finding_id}/playbook returns playbook keys",
-        "GET", f"/api/findings/{_finding_id}/playbook",
+        "GET",
+        f"/api/findings/{_finding_id}/playbook",
         lambda s, b: all(k in b for k in ("portal_steps", "cli_commands", "validation_steps")),
     )
 else:
