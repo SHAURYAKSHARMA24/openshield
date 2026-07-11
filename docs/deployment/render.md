@@ -62,6 +62,13 @@ environment, the API and worker must use matching `DATABASE_URL` and `JWT_SECRET
 values and the required Azure credentials. Values declared with `sync: false` in
 the Blueprint must be configured in Render and are never stored in this repository.
 
+The two API services also require `ALLOWED_ORIGINS`. Set the staging API to its
+staging frontend origin and the production API to its production frontend origin.
+When more than one origin is required, use the comma-separated format accepted by
+the Flask application. Leaving this value unset enables wildcard CORS and is not
+acceptable for a real staging or production environment. Do not add this setting to
+worker services.
+
 ## Coordinated deterministic deployment
 
 For the selected environment, the workflow:
@@ -85,6 +92,16 @@ Render failures, and the overall timeout fail immediately. Retry time counts aga
 the overall timeout. Logs identify the service, SHA, deployment ID when known, and
 last status without printing credentials.
 
+## Migration and worker startup ordering
+
+API startup owns database migration execution through `alembic upgrade head`. The
+worker can begin querying PostgreSQL while a migration is still completing, so it
+may temporarily encounter database errors; the current worker loop catches these
+errors and retries. This does not make every future migration safe. Non-backward-
+compatible schema changes require deliberate API/worker rollout planning, and
+maintainers should monitor worker logs during the first deployment after a schema
+migration. Do not run migrations independently in both services.
+
 ## Partial failure and recovery
 
 API and worker deployment is coordinated, not atomic. Possible partial states
@@ -99,8 +116,8 @@ When this happens:
 
 1. inspect both services in Render and record the API and worker deployment IDs;
 2. confirm the commit SHA attached to each deployment;
-3. rerun the workflow from the correct branch, using the same commit SHA where
-   possible;
+3. rerun the workflow from the correct branch for a current-branch deployment, or
+   use the manual rollback procedure below for a historical SHA;
 4. do not manually deploy a different commit to only one service;
 5. confirm both services converge on the same SHA before treating the environment
    as healthy.
@@ -136,23 +153,63 @@ reported as completed unless the live API or dashboard was actually used.
 6. Perform the application-level worker verification described above.
 7. Confirm both Render services report the same SHA.
 
+A normal workflow dispatch always deploys `github.sha` from the selected current
+`dev` or `main` ref. It cannot deploy an arbitrary historical SHA.
+
 ## Rollback
 
-Rollback must keep the API and worker aligned. Dispatch or manually invoke the
-deployment client for the same known-good SHA against both service IDs, capture both
-new deployment IDs, and wait for both to become live. Do not roll back only one
-service to a different commit.
+Historical rollback must currently be performed with the deployment client or the
+Render dashboard/API. The rollback is coordinated but not atomic: invoke it for
+both API and worker using the same known-good SHA, capture both deployment IDs, and
+confirm both services converge before treating the environment as healthy.
 
-The client supports separate creation and waiting phases:
+Create and wait for the API deployment:
 
 ```bash
-RENDER_SERVICE_ID="<service-id>" GITHUB_SHA="<known-good-sha>" \
-  python scripts/render_deploy.py create
+RENDER_API_KEY="<render-api-key>" \
+RENDER_SERVICE_ID="<api-service-id>" \
+RENDER_SERVICE_NAME="API" \
+GITHUB_SHA="<known-good-sha>" \
+python scripts/render_deploy.py create
+# deploy_id=<deployment-id>
 
-RENDER_SERVICE_ID="<service-id>" RENDER_DEPLOY_ID="<deployment-id>" \
-  GITHUB_SHA="<known-good-sha>" python scripts/render_deploy.py wait
+RENDER_API_KEY="<render-api-key>" \
+RENDER_SERVICE_ID="<api-service-id>" \
+RENDER_SERVICE_NAME="API" \
+RENDER_DEPLOY_ID="<deployment-id>" \
+GITHUB_SHA="<known-good-sha>" \
+python scripts/render_deploy.py wait
 ```
 
-The default `deploy` command creates and waits for one service and is useful for
-manual recovery, but maintainers must repeat it for the matching API or worker so
-both converge on the same SHA.
+Repeat the equivalent commands for the worker:
+
+```bash
+RENDER_API_KEY="<render-api-key>" \
+RENDER_SERVICE_ID="<worker-service-id>" \
+RENDER_SERVICE_NAME="worker" \
+GITHUB_SHA="<known-good-sha>" \
+python scripts/render_deploy.py create
+# deploy_id=<deployment-id>
+
+RENDER_API_KEY="<render-api-key>" \
+RENDER_SERVICE_ID="<worker-service-id>" \
+RENDER_SERVICE_NAME="worker" \
+RENDER_DEPLOY_ID="<deployment-id>" \
+GITHUB_SHA="<known-good-sha>" \
+python scripts/render_deploy.py wait
+```
+
+For a simpler one-service operation, default `deploy` mode creates and waits for a
+single service:
+
+```bash
+RENDER_API_KEY="<render-api-key>" \
+RENDER_SERVICE_ID="<service-id>" \
+RENDER_SERVICE_NAME="<API-or-worker>" \
+GITHUB_SHA="<known-good-sha>" \
+python scripts/render_deploy.py deploy
+```
+
+Run that command separately for both matching services and confirm both report the
+same SHA. These examples are documented procedures only; no live rollback was run
+as part of this change.
