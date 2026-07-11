@@ -15,10 +15,9 @@
 #     deterministically by GitHub Actions
 #     (.github/workflows/deploy.yml -> scripts/render_deploy.py), so Render's own
 #     auto-deploy is disabled to avoid duplicate/racing deploys of the same service.
-#   * Worker services use `autoDeployTrigger: commit` (auto-deploy on every push to
-#     their branch). Nothing else deploys them, so there is no duplication. They can
-#     also be deployed deterministically with scripts/render_deploy.py by passing the
-#     worker's service id as RENDER_SERVICE_ID.
+#   * All services use `autoDeployTrigger: "off"`. GitHub Actions deploys each
+#     environment's API and worker to the same immutable commit and monitors both
+#     exact deployment IDs.
 #
 # No secret values, real service ids, or credentials are stored here. Secrets are
 # declared per service with `sync: false`, meaning Render will NOT overwrite the
@@ -66,7 +65,7 @@ services:
     name: openshield-worker-staging
     runtime: python
     branch: dev
-    autoDeployTrigger: commit
+    autoDeployTrigger: "off"
     buildCommand: pip install -r requirements.txt
     startCommand: python -m scanner.worker
     envVars:
@@ -126,7 +125,7 @@ services:
     name: openshield-worker
     runtime: python
     branch: main
-    autoDeployTrigger: commit
+    autoDeployTrigger: "off"
     buildCommand: pip install -r requirements.txt
     startCommand: python -m scanner.worker
     envVars:

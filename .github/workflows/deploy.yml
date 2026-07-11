@@ -1,12 +1,5 @@
-name: Deploy API to Render
+name: Deploy API and worker to Render
 
-# Manual, deterministic deploys only.
-#
-# Automatic push-triggered deploys are intentionally NOT enabled: the staging/
-# production Render services, database, and secrets must exist first. Deploying on
-# every push/merge before that infrastructure is provisioned would fail. Once
-# maintainers confirm the Render staging/prod setup, a `push:` trigger can be
-# re-added if desired.
 on:
   workflow_dispatch:
     inputs:
@@ -23,7 +16,6 @@ on:
         default: true
         type: boolean
 
-# Never let two deploys of the same environment race each other.
 concurrency:
   group: deploy-${{ inputs.environment }}
   cancel-in-progress: false
@@ -35,6 +27,7 @@ jobs:
   deploy:
     name: Deploy to Render (${{ inputs.environment }})
     runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
 
     steps:
       - name: Checkout repository
@@ -45,7 +38,6 @@ jobs:
         with:
           python-version: "3.11"
 
-      # ── Dependency caching ─────────────────────────────────────────────
       - name: Cache pip dependencies
         uses: actions/cache@v4
         with:
@@ -59,46 +51,87 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      # ── Deterministic Render deploy ────────────────────────────────────
-      # Triggers a deploy of the chosen environment's service pinned to the
-      # dispatched commit SHA and blocks until Render reports that specific
-      # deploy live (or fails). No fixed sleeps: the step's exit code is Render's
-      # real deploy status.
-      - name: Deploy to Render and wait for it to go live
+      # This must remain before either create step: invalid branch/environment
+      # combinations and missing configuration must result in zero Render POSTs.
+      - name: Validate deployment preflight
         env:
-          RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
-          # Both ids are exposed; the correct one is chosen strictly by the
-          # selected environment below (no cross-environment fallback).
-          RENDER_STAGING_SERVICE_ID: ${{ secrets.RENDER_STAGING_SERVICE_ID }}
-          RENDER_PRODUCTION_SERVICE_ID: ${{ secrets.RENDER_PRODUCTION_SERVICE_ID }}
+          DEPLOY_ENVIRONMENT: ${{ inputs.environment }}
+          RUN_SMOKE_TESTS: ${{ inputs.run_smoke_tests }}
+          GITHUB_REF_NAME: ${{ github.ref_name }}
           GITHUB_SHA: ${{ github.sha }}
-        run: |
-          if [ "${{ inputs.environment }}" = "production" ]; then
-            export RENDER_SERVICE_ID="$RENDER_PRODUCTION_SERVICE_ID"
-          else
-            export RENDER_SERVICE_ID="$RENDER_STAGING_SERVICE_ID"
-          fi
-          if [ -z "$RENDER_API_KEY" ] || [ -z "$RENDER_SERVICE_ID" ]; then
-            echo "ERROR: RENDER_API_KEY and the ${{ inputs.environment }} service id must be configured as GitHub secrets."
-            exit 1
-          fi
-          python scripts/render_deploy.py
-
-      # ── Health gate (against the selected environment's URL) ───────────
-      - name: Health gate check
-        env:
+          RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+          RENDER_STAGING_SERVICE_ID: ${{ secrets.RENDER_STAGING_SERVICE_ID }}
+          RENDER_STAGING_WORKER_SERVICE_ID: ${{ secrets.RENDER_STAGING_WORKER_SERVICE_ID }}
+          RENDER_PRODUCTION_SERVICE_ID: ${{ secrets.RENDER_PRODUCTION_SERVICE_ID }}
+          RENDER_PRODUCTION_WORKER_SERVICE_ID: ${{ secrets.RENDER_PRODUCTION_WORKER_SERVICE_ID }}
           STAGING_API_URL: ${{ secrets.STAGING_API_URL }}
           PRODUCTION_API_URL: ${{ secrets.PRODUCTION_API_URL }}
+          JWT_SECRET: ${{ secrets.JWT_SECRET }}
+          AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+        run: python scripts/render_deploy_preflight.py
+
+      # Creation and polling are separate so both exact deployment IDs are
+      # retained and independently monitored. POST creation is never retried.
+      - name: Create API deployment
+        id: create_api
+        env:
+          RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+          RENDER_SERVICE_ID: ${{ env.RENDER_API_SERVICE_ID }}
+          RENDER_SERVICE_NAME: API
+          GITHUB_SHA: ${{ github.sha }}
+        run: python scripts/render_deploy.py create
+
+      - name: Create worker deployment
+        id: create_worker
+        env:
+          RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+          RENDER_SERVICE_ID: ${{ env.RENDER_WORKER_SERVICE_ID }}
+          RENDER_SERVICE_NAME: worker
+          GITHUB_SHA: ${{ github.sha }}
+        run: python scripts/render_deploy.py create
+
+      - name: Wait for API deployment
+        id: wait_api
+        continue-on-error: true
+        env:
+          RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+          RENDER_SERVICE_ID: ${{ env.RENDER_API_SERVICE_ID }}
+          RENDER_SERVICE_NAME: API
+          RENDER_DEPLOY_ID: ${{ steps.create_api.outputs.deploy_id }}
+          GITHUB_SHA: ${{ github.sha }}
+        run: python scripts/render_deploy.py wait
+
+      - name: Wait for worker deployment
+        id: wait_worker
+        continue-on-error: true
+        env:
+          RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+          RENDER_SERVICE_ID: ${{ env.RENDER_WORKER_SERVICE_ID }}
+          RENDER_SERVICE_NAME: worker
+          RENDER_DEPLOY_ID: ${{ steps.create_worker.outputs.deploy_id }}
+          GITHUB_SHA: ${{ github.sha }}
+        run: python scripts/render_deploy.py wait
+
+      - name: Require both deployments to be live
+        if: always()
+        env:
+          API_RESULT: ${{ steps.wait_api.outcome }}
+          WORKER_RESULT: ${{ steps.wait_worker.outcome }}
+          API_DEPLOY_ID: ${{ steps.create_api.outputs.deploy_id }}
+          WORKER_DEPLOY_ID: ${{ steps.create_worker.outputs.deploy_id }}
+          GITHUB_SHA: ${{ github.sha }}
         run: |
-          if [ "${{ inputs.environment }}" = "production" ]; then
-            API_URL="$PRODUCTION_API_URL"
-          else
-            API_URL="$STAGING_API_URL"
-          fi
-          if [ -z "$API_URL" ]; then
-            echo "ERROR: the ${{ inputs.environment }} API URL secret is not configured."
+          if [ "$API_RESULT" != "success" ] || [ "$WORKER_RESULT" != "success" ]; then
+            echo "ERROR: coordinated deployment failed for SHA $GITHUB_SHA. API deploy $API_DEPLOY_ID: $API_RESULT; worker deploy $WORKER_DEPLOY_ID: $WORKER_RESULT."
             exit 1
           fi
+          echo "API deploy $API_DEPLOY_ID and worker deploy $WORKER_DEPLOY_ID are live at SHA $GITHUB_SHA."
+
+      - name: Health gate check
+        run: |
           MAX_RETRIES=5
           RETRY_DELAY=15
           URL="${API_URL}/health"
@@ -107,25 +140,19 @@ jobs:
           for i in $(seq 1 $MAX_RETRIES); do
             echo "Health check attempt $i of $MAX_RETRIES..."
             HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" "$URL" --max-time 30) || true
-
             if [ "$HTTP_STATUS" -eq 200 ]; then
               echo "Health check passed (HTTP $HTTP_STATUS)"
               exit 0
             fi
-
-            echo "Got HTTP $HTTP_STATUS — retrying in ${RETRY_DELAY}s..."
+            echo "Got HTTP $HTTP_STATUS; retrying in ${RETRY_DELAY}s..."
             sleep $RETRY_DELAY
           done
-
-          echo "ERROR: Health gate failed after $MAX_RETRIES attempts on the ${{ inputs.environment }} environment."
+          echo "ERROR: Health gate failed after $MAX_RETRIES attempts on ${{ inputs.environment }}."
           exit 1
 
-      # ── Smoke tests (optional; against the same environment URL) ───────
       - name: Run smoke tests against live deployment
         if: inputs.run_smoke_tests
         env:
-          STAGING_API_URL: ${{ secrets.STAGING_API_URL }}
-          PRODUCTION_API_URL: ${{ secrets.PRODUCTION_API_URL }}
           JWT_SECRET: ${{ secrets.JWT_SECRET }}
           AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
           AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
@@ -133,14 +160,5 @@ jobs:
           AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
           RUN_REAL_SCAN: "true"
         run: |
-          if [ "${{ inputs.environment }}" = "production" ]; then
-            export API_URL="$PRODUCTION_API_URL"
-          else
-            export API_URL="$STAGING_API_URL"
-          fi
-          if [ -z "$JWT_SECRET" ]; then
-            echo "ERROR: JWT_SECRET is required to run smoke tests against a deployed environment."
-            exit 1
-          fi
           echo "Running smoke tests against: $API_URL"
           python tests/smoke_test.py
