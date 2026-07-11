@@ -2,9 +2,8 @@
 """Validate a manual Render deployment before any API request is made."""
 
 import os
-import sys
 from dataclasses import dataclass
-from typing import Mapping, NoReturn
+from typing import Mapping
 
 
 @dataclass(frozen=True)
@@ -38,8 +37,7 @@ SMOKE_SECRETS = (
 )
 
 
-def fail(message: str) -> NoReturn:
-    print(f"ERROR: {message}", file=sys.stderr)
+def abort() -> None:
     raise SystemExit(1)
 
 
@@ -47,12 +45,17 @@ def validate(environment: Mapping[str, str]) -> DeployConfig:
     target = environment.get("DEPLOY_ENVIRONMENT", "")
     mapping = ENVIRONMENTS.get(target)
     if mapping is None:
-        fail("DEPLOY_ENVIRONMENT must be staging or production")
+        print("ERROR: deployment target must be staging or production")
+        abort()
 
     ref_name = environment.get("GITHUB_REF_NAME", "")
     expected_branch = mapping["branch"]
     if ref_name != expected_branch:
-        fail(f"{target} deployments must be dispatched from {expected_branch}; received {ref_name or '(empty)'}")
+        if target == "staging":
+            print("ERROR: staging deployments must be dispatched from dev")
+            abort()
+        print("ERROR: production deployments must be dispatched from main")
+        abort()
 
     required = {
         "RENDER_API_KEY": environment.get("RENDER_API_KEY", ""),
@@ -65,7 +68,11 @@ def validate(environment: Mapping[str, str]) -> DeployConfig:
         required.update({name: environment.get(name, "") for name in SMOKE_SECRETS})
     missing = [name for name, value in required.items() if not value]
     if missing:
-        fail(f"Missing required deployment configuration: {', '.join(missing)}")
+        print(
+            "ERROR: required deployment configuration is missing; check the Render key, selected service IDs, "
+            "API URL, SHA, and enabled smoke-test credentials"
+        )
+        abort()
 
     return DeployConfig(
         api_service_id=required[mapping["api_service"]],
@@ -86,9 +93,10 @@ def main() -> None:
     config = validate(os.environ)
     github_env = os.environ.get("GITHUB_ENV", "")
     if not github_env:
-        fail("GITHUB_ENV environment variable is not set")
+        print("ERROR: GitHub Actions environment output is unavailable")
+        abort()
     write_github_env(config, github_env)
-    print(f"Validated {os.environ['DEPLOY_ENVIRONMENT']} deployment preflight for SHA {config.commit_sha}")
+    print("Deployment preflight passed")
 
 
 if __name__ == "__main__":
