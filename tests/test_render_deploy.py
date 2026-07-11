@@ -1,5 +1,6 @@
 import io
 import json
+import sys
 import urllib.error
 
 import pytest
@@ -65,6 +66,77 @@ def test_post_network_failure_is_not_retried(monkeypatch):
     with pytest.raises(SystemExit):
         render_deploy.trigger_deploy("srv-api", "secret", "abc123")
     assert len(calls) == 1
+
+
+def _set_cli_environment(monkeypatch, **overrides):
+    environment = {
+        "RENDER_API_KEY": "secret",
+        "RENDER_SERVICE_ID": "srv-api",
+        "RENDER_SERVICE_NAME": "API",
+        "GITHUB_SHA": "abc123",
+    }
+    environment.update(overrides)
+    for name in ("GITHUB_OUTPUT", "RENDER_DEPLOY_ID", "RENDER_DEPLOY_TIMEOUT_SECONDS", "RENDER_DEPLOY_POLL_SECONDS"):
+        monkeypatch.delenv(name, raising=False)
+    for name, value in environment.items():
+        monkeypatch.setenv(name, value)
+
+
+def test_create_mode_succeeds_locally_and_prints_deployment_id(monkeypatch, capsys):
+    calls = sequence(monkeypatch, [{"id": "dep-local"}])
+    _set_cli_environment(monkeypatch)
+    monkeypatch.setattr(sys, "argv", ["render_deploy.py", "create"])
+
+    render_deploy.main()
+
+    assert len(calls) == 1
+    assert capsys.readouterr().out.splitlines()[-1] == "deploy_id=dep-local"
+
+
+def test_create_mode_writes_github_output_when_available(monkeypatch, tmp_path, capsys):
+    calls = sequence(monkeypatch, [{"id": "dep-actions"}])
+    output_file = tmp_path / "github-output"
+    _set_cli_environment(monkeypatch, GITHUB_OUTPUT=str(output_file))
+    monkeypatch.setattr(sys, "argv", ["render_deploy.py", "create"])
+
+    render_deploy.main()
+
+    assert len(calls) == 1
+    assert capsys.readouterr().out.splitlines()[-1] == "deploy_id=dep-actions"
+    assert output_file.read_text(encoding="utf-8") == "deploy_id=dep-actions\n"
+
+
+def test_failed_create_writes_no_github_output_and_is_not_retried(monkeypatch, tmp_path):
+    calls = sequence(monkeypatch, [urllib.error.URLError("offline")])
+    output_file = tmp_path / "github-output"
+    _set_cli_environment(monkeypatch, GITHUB_OUTPUT=str(output_file))
+    monkeypatch.setattr(sys, "argv", ["render_deploy.py", "create"])
+
+    with pytest.raises(SystemExit):
+        render_deploy.main()
+
+    assert len(calls) == 1
+    assert not output_file.exists()
+
+
+def test_wait_mode_requires_deployment_id(monkeypatch):
+    _set_cli_environment(monkeypatch)
+    monkeypatch.setattr(sys, "argv", ["render_deploy.py", "wait"])
+
+    with pytest.raises(SystemExit):
+        render_deploy.main()
+
+
+def test_default_deploy_creates_once_and_waits_for_the_same_id(monkeypatch):
+    calls = sequence(monkeypatch, [{"id": "dep-default"}, {"status": "live"}])
+    _set_cli_environment(monkeypatch, RENDER_DEPLOY_TIMEOUT_SECONDS="30", RENDER_DEPLOY_POLL_SECONDS="1")
+    monkeypatch.setattr(sys, "argv", ["render_deploy.py"])
+
+    render_deploy.main()
+
+    assert len(calls) == 2
+    assert calls[0].method == "POST"
+    assert calls[1].full_url.endswith("/srv-api/deploys/dep-default")
 
 
 def test_successful_polling_uses_exact_deployment_id(monkeypatch):

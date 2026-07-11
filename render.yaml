@@ -46,6 +46,8 @@ services:
         sync: false
       - key: JWT_SECRET
         sync: false
+      - key: ALLOWED_ORIGINS
+        sync: false
       - key: AZURE_SUBSCRIPTION_ID
         sync: false
       - key: AZURE_CLIENT_ID
@@ -105,6 +107,8 @@ services:
       - key: DATABASE_URL
         sync: false
       - key: JWT_SECRET
+        sync: false
+      - key: ALLOWED_ORIGINS
         sync: false
       - key: AZURE_SUBSCRIPTION_ID
         sync: false

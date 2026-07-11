@@ -122,7 +122,6 @@ def trigger_deploy(service_id: str, api_key: str, commit_sha: str, service_name:
     deploy_id = result.get("id")
     if not isinstance(deploy_id, str) or not deploy_id.strip():
         _fail(f"{service_name} deploy creation for service {service_id} at SHA {commit_sha} returned no deployment ID")
-    print(f"Created {service_name} deployment {deploy_id} for SHA {commit_sha}")
     return deploy_id
 
 
@@ -178,8 +177,11 @@ def poll_deploy(
         sleep(poll_s)
 
 
-def _write_github_output(name: str, value: str) -> None:
-    output_path = _env("GITHUB_OUTPUT")
+def _write_github_output_if_available(name: str, value: str) -> None:
+    """Expose an output to GitHub Actions when the workflow output file exists."""
+    output_path = os.environ.get("GITHUB_OUTPUT")
+    if not output_path:
+        return
     with open(output_path, "a", encoding="utf-8") as output:
         output.write(f"{name}={value}\n")
 
@@ -197,7 +199,8 @@ def main() -> None:
     if args.command in {"create", "deploy"}:
         deploy_id = trigger_deploy(service_id, api_key, commit_sha, service_name)
         if args.command == "create":
-            _write_github_output("deploy_id", deploy_id)
+            print(f"deploy_id={deploy_id}")
+            _write_github_output_if_available("deploy_id", deploy_id)
             return
     else:
         deploy_id = _env("RENDER_DEPLOY_ID")

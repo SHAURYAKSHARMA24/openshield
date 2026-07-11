@@ -120,3 +120,9 @@ def test_render_blueprint_disables_auto_deploy_and_preserves_service_layout():
     assert all(
         service["startCommand"] == "python -m scanner.worker" for service in services if service["type"] == "worker"
     )
+    for service in services:
+        env_vars = {entry["key"]: entry for entry in service["envVars"]}
+        if service["type"] == "web":
+            assert env_vars["ALLOWED_ORIGINS"]["sync"] is False
+        else:
+            assert "ALLOWED_ORIGINS" not in env_vars
