@@ -1,45 +1,21 @@
 #!/usr/bin/env python3
-"""
-scripts/render_deploy.py
+"""Create or monitor an immutable Render deployment.
 
-Trigger a Render deploy for a single service and block until that *specific*
-deploy reaches a terminal state. This replaces the previous "sleep then hope"
-approach in the deploy workflow: the exit code reflects Render's real deploy
-status, never a timer.
-
-Behaviour
----------
-1. POST https://api.render.com/v1/services/{serviceId}/deploys with the GitHub
-   commit SHA as ``commitId`` (so Render deploys exactly the commit CI built).
-2. Capture the returned deploy id.
-3. Poll GET https://api.render.com/v1/services/{serviceId}/deploys/{deployId}
-   until the deploy becomes live (exit 0) or fails/cancels/times out (exit != 0).
-
-Environment
------------
-Required:
-  RENDER_API_KEY   Render API key (Bearer token). Never printed.
-  RENDER_SERVICE_ID   Target service id, e.g. "srv-xxxxxxxx".
-  GITHUB_SHA       Commit SHA to deploy. Provided automatically by GitHub Actions.
-
-Optional:
-  RENDER_DEPLOY_TIMEOUT_SECONDS   Overall poll budget (default 1800).
-  RENDER_DEPLOY_POLL_SECONDS      Seconds between polls (default 15).
-
-Only the Python standard library is used so the script runs with no extra
-dependencies installed.
+The deployment-creation POST is deliberately single-attempt. Polling GETs retry
+transient failures within the deployment's overall timeout budget.
 """
 
+import argparse
 import json
 import os
+import socket
 import sys
 import time
 import urllib.error
 import urllib.request
+from typing import NoReturn
 
 API_ROOT = "https://api.render.com/v1"
-
-# Render deploy statuses. See https://api-docs.render.com/reference/get-deploy
 LIVE_STATUS = "live"
 IN_PROGRESS_STATUSES = {
     "created",
@@ -55,12 +31,13 @@ FAILED_STATUSES = {
     "canceled",
     "deactivated",
 }
+RETRYABLE_HTTP_CODES = {429, 500, 502, 503, 504}
+RETRY_DELAYS_SECONDS = (1, 2, 4)
 
 
-def _fail(message: str) -> "None":
-    """Print an error to stderr and exit non-zero."""
+def _fail(message: str) -> NoReturn:
     print(f"ERROR: {message}", file=sys.stderr)
-    sys.exit(1)
+    raise SystemExit(1)
 
 
 def _env(name: str, required: bool = True, default: str = "") -> str:
@@ -70,114 +47,169 @@ def _env(name: str, required: bool = True, default: str = "") -> str:
     return value
 
 
-def _request(method: str, url: str, api_key: str, payload: "dict | None" = None) -> dict:
-    """Make a Render API call and return the parsed JSON object.
-
-    Raises SystemExit (via _fail) on transport errors or malformed responses.
-    """
-    data = json.dumps(payload).encode("utf-8") if payload is not None else None
-    req = urllib.request.Request(url, data=data, method=method)
-    req.add_header("Authorization", f"Bearer {api_key}")
-    req.add_header("Accept", "application/json")
-    if data is not None:
-        req.add_header("Content-Type", "application/json")
-
+def _error_detail(exc: urllib.error.HTTPError) -> str:
     try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            body = resp.read().decode("utf-8")
-    except urllib.error.HTTPError as exc:
-        # Read the error body for context but never echo the API key.
-        detail = ""
-        try:
-            detail = exc.read().decode("utf-8")[:500]
-        except Exception:
-            pass
-        _fail(f"{method} {url} returned HTTP {exc.code}. {detail}".strip())
-    except urllib.error.URLError as exc:
-        _fail(f"{method} {url} failed: {exc.reason}")
+        return exc.read().decode("utf-8")[:500]
+    except Exception:
+        return ""
 
+
+def _decode_json(body: str, context: str) -> dict:
     try:
-        parsed = json.loads(body)
+        result = json.loads(body)
     except json.JSONDecodeError:
-        _fail(f"{method} {url} returned a non-JSON response: {body[:200]!r}")
-
-    return parsed
-
-
-def trigger_deploy(service_id: str, api_key: str, commit_sha: str) -> str:
-    """Create a deploy for ``commit_sha`` and return the new deploy id."""
-    url = f"{API_ROOT}/services/{service_id}/deploys"
-    payload = {"commitId": commit_sha} if commit_sha else {}
-    print(f"Triggering Render deploy for service {service_id} at commit {commit_sha or '(latest)'}...")
-
-    result = _request("POST", url, api_key, payload=payload)
+        _fail(f"{context} returned malformed JSON")
     if not isinstance(result, dict):
-        _fail(f"Unexpected deploy-create response (not an object): {result!r}")
+        _fail(f"{context} returned an invalid payload shape")
+    return result
 
+
+def _open(request: urllib.request.Request) -> str:
+    with urllib.request.urlopen(request, timeout=30) as response:
+        return response.read().decode("utf-8")
+
+
+def _request(
+    method: str,
+    url: str,
+    api_key: str,
+    payload: dict | None = None,
+    *,
+    deadline: float | None = None,
+    sleep=time.sleep,
+    monotonic=time.monotonic,
+) -> dict:
+    """Make one POST, or retry a polling GET on transient failures."""
+    data = json.dumps(payload).encode("utf-8") if payload is not None else None
+    request = urllib.request.Request(url, data=data, method=method)
+    request.add_header("Authorization", f"Bearer {api_key}")
+    request.add_header("Accept", "application/json")
+    if data is not None:
+        request.add_header("Content-Type", "application/json")
+
+    attempts = 1 if method != "GET" else 1 + len(RETRY_DELAYS_SECONDS)
+    for attempt in range(attempts):
+        try:
+            return _decode_json(_open(request), f"{method} {url}")
+        except urllib.error.HTTPError as exc:
+            retryable = method == "GET" and exc.code in RETRYABLE_HTTP_CODES
+            detail = _error_detail(exc)
+            error = f"HTTP {exc.code}{f': {detail}' if detail else ''}"
+        except (urllib.error.URLError, TimeoutError, ConnectionResetError, socket.timeout) as exc:
+            retryable = method == "GET"
+            reason = getattr(exc, "reason", exc)
+            error = f"network error: {reason}"
+
+        if not retryable:
+            _fail(f"{method} {url} failed: {error}")
+        if attempt == attempts - 1:
+            _fail(f"{method} {url} exhausted {attempts} attempts after transient {error}")
+
+        delay = RETRY_DELAYS_SECONDS[attempt]
+        if deadline is not None and monotonic() + delay > deadline:
+            _fail(f"{method} {url} cannot retry within the overall deployment timeout after transient {error}")
+        print(f"Transient {error}; retrying GET in {delay}s (attempt {attempt + 2}/{attempts})")
+        sleep(delay)
+
+    raise AssertionError("unreachable")
+
+
+def trigger_deploy(service_id: str, api_key: str, commit_sha: str, service_name: str = "service") -> str:
+    """Create one deploy and return its exact deployment ID; never retry POST."""
+    url = f"{API_ROOT}/services/{service_id}/deploys"
+    print(f"Creating {service_name} deploy for service {service_id} at SHA {commit_sha}")
+    result = _request("POST", url, api_key, payload={"commitId": commit_sha})
     deploy_id = result.get("id")
-    if not deploy_id:
-        _fail(f"Deploy-create response did not contain a deploy id: {result!r}")
-
-    print(f"Created deploy {deploy_id} (initial status: {result.get('status', 'unknown')})")
+    if not isinstance(deploy_id, str) or not deploy_id.strip():
+        _fail(f"{service_name} deploy creation for service {service_id} at SHA {commit_sha} returned no deployment ID")
+    print(f"Created {service_name} deployment {deploy_id} for SHA {commit_sha}")
     return deploy_id
 
 
-def poll_deploy(service_id: str, api_key: str, deploy_id: str, timeout_s: int, poll_s: int) -> None:
-    """Poll a specific deploy until it is live, fails, or times out."""
+def poll_deploy(
+    service_id: str,
+    api_key: str,
+    deploy_id: str,
+    commit_sha: str,
+    timeout_s: int,
+    poll_s: int,
+    service_name: str = "service",
+    *,
+    sleep=time.sleep,
+    monotonic=time.monotonic,
+) -> None:
+    """Poll the exact deployment ID until live, terminal failure, or timeout."""
     url = f"{API_ROOT}/services/{service_id}/deploys/{deploy_id}"
-    deadline = time.monotonic() + timeout_s
-    last_status = None
+    deadline = monotonic() + timeout_s
+    last_status = "not observed"
 
     while True:
-        result = _request("GET", url, api_key)
-        # The get-deploy endpoint may return the deploy object directly or
-        # wrapped as {"deploy": {...}}; handle both shapes.
-        if isinstance(result, dict) and "deploy" in result and isinstance(result["deploy"], dict):
+        if monotonic() >= deadline:
+            _fail(
+                f"{service_name} service {service_id} deployment {deploy_id} at SHA {commit_sha} timed out "
+                f"after {timeout_s}s; last status: {last_status}"
+            )
+        result = _request("GET", url, api_key, deadline=deadline, sleep=sleep, monotonic=monotonic)
+        if "deploy" in result:
             result = result["deploy"]
-        if not isinstance(result, dict):
-            _fail(f"Unexpected deploy-status response (not an object): {result!r}")
-
+            if not isinstance(result, dict):
+                _fail(f"{service_name} deployment {deploy_id} returned an invalid deploy payload")
         status = result.get("status")
-        if not status:
-            _fail(f"Deploy-status response did not contain a status: {result!r}")
-
-        if status != last_status:
-            print(f"Deploy {deploy_id} status: {status}")
-            last_status = status
+        if not isinstance(status, str) or not status:
+            _fail(f"{service_name} service {service_id} deployment {deploy_id} response contained no status")
+        last_status = status
+        print(f"{service_name} deployment {deploy_id} at SHA {commit_sha}: {status}")
 
         if status == LIVE_STATUS:
-            print(f"Deploy {deploy_id} is live. Deployment succeeded.")
             return
-
         if status in FAILED_STATUSES:
-            _fail(f"Deploy {deploy_id} ended in non-live status '{status}'.")
-
+            _fail(
+                f"{service_name} service {service_id} deployment {deploy_id} at SHA {commit_sha} "
+                f"failed with terminal status {status}"
+            )
         if status not in IN_PROGRESS_STATUSES:
-            # Unknown/new status: keep polling but make it visible.
-            print(f"Deploy {deploy_id} reported unrecognised status '{status}'; continuing to poll.")
+            _fail(f"{service_name} deployment {deploy_id} returned unknown status {status!r}")
 
-        if time.monotonic() >= deadline:
-            _fail(f"Timed out after {timeout_s}s waiting for deploy {deploy_id} (last status: {status}).")
+        if monotonic() + poll_s > deadline:
+            _fail(
+                f"{service_name} service {service_id} deployment {deploy_id} at SHA {commit_sha} timed out; "
+                f"last status: {last_status}"
+            )
+        sleep(poll_s)
 
-        time.sleep(poll_s)
+
+def _write_github_output(name: str, value: str) -> None:
+    output_path = _env("GITHUB_OUTPUT")
+    with open(output_path, "a", encoding="utf-8") as output:
+        output.write(f"{name}={value}\n")
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("command", choices=("create", "wait", "deploy"), nargs="?", default="deploy")
+    args = parser.parse_args()
+
     api_key = _env("RENDER_API_KEY")
     service_id = _env("RENDER_SERVICE_ID")
-    commit_sha = _env("GITHUB_SHA", required=False)
+    commit_sha = _env("GITHUB_SHA")
+    service_name = _env("RENDER_SERVICE_NAME", required=False, default="service")
+
+    if args.command in {"create", "deploy"}:
+        deploy_id = trigger_deploy(service_id, api_key, commit_sha, service_name)
+        if args.command == "create":
+            _write_github_output("deploy_id", deploy_id)
+            return
+    else:
+        deploy_id = _env("RENDER_DEPLOY_ID")
 
     try:
         timeout_s = int(_env("RENDER_DEPLOY_TIMEOUT_SECONDS", required=False, default="1800"))
         poll_s = int(_env("RENDER_DEPLOY_POLL_SECONDS", required=False, default="15"))
     except ValueError:
         _fail("RENDER_DEPLOY_TIMEOUT_SECONDS and RENDER_DEPLOY_POLL_SECONDS must be integers")
-
-    if poll_s <= 0:
-        _fail("RENDER_DEPLOY_POLL_SECONDS must be a positive integer")
-
-    deploy_id = trigger_deploy(service_id, api_key, commit_sha)
-    poll_deploy(service_id, api_key, deploy_id, timeout_s, poll_s)
+    if timeout_s <= 0 or poll_s <= 0:
+        _fail("Render deploy timeout and poll interval must be positive integers")
+    poll_deploy(service_id, api_key, deploy_id, commit_sha, timeout_s, poll_s, service_name)
 
 
 if __name__ == "__main__":
