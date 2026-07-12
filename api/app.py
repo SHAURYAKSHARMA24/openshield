@@ -130,15 +130,13 @@ def create_app() -> Flask:
 
     @app.teardown_appcontext
     def close_db(error=None):
-        """Ensure the database connection is closed after the request."""
+        """Return the request's pooled database connection after the request."""
         for key in ("db", "db_conn"):
             db = g.pop(key, None)
             if db is None:
                 continue
             try:
-                if hasattr(db, "conn") and db.conn is not None:
-                    db.conn.close()
-                    logger.debug("Database connection closed gracefully")
+                db.close()
             except Exception as exc:
                 logger.error("Error closing database connection: %s", exc)
 
