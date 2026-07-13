@@ -229,13 +229,27 @@ let selectedImageFile = null;
 // Base64 adds ~33% overhead, so the raw file must be under ~750 KB.
 const MAX_IMAGE_BYTES = 700 * 1024;
 
+const EMBED_ALLOWED_HOSTS = new Set(['www.youtube.com', 'youtube.com', 'player.vimeo.com']);
+
 function toEmbedUrl(raw) {
     if (!raw) return '';
     const yt = raw.match(/(?:youtube\.com\/watch\?v=|youtu\.be\/)([a-zA-Z0-9_-]{11})/);
     if (yt) return `https://www.youtube.com/embed/${yt[1]}`;
     const vi = raw.match(/vimeo\.com\/(\d+)/);
     if (vi) return `https://player.vimeo.com/video/${vi[1]}`;
-    if (raw.includes('youtube.com/embed') || raw.includes('player.vimeo.com')) return raw;
+
+    // Already-an-embed-URL fallback: verify the actual origin instead of a
+    // substring check, which a crafted string (e.g. containing
+    // "youtube.com/embed" anywhere but hosted elsewhere) can bypass and
+    // break out of the iframe's src="..." attribute when interpolated.
+    try {
+        const parsed = new URL(raw);
+        if (parsed.protocol === 'https:' && EMBED_ALLOWED_HOSTS.has(parsed.hostname)) {
+            return raw;
+        }
+    } catch {
+        // Not a valid absolute URL — fall through to reject below.
+    }
     return '';
 }
 
