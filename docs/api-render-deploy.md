@@ -1,19 +1,16 @@
-# Test Plan — API-DEP-001
-# Render API Deployment and CI Smoke Testing
-# ============================================================
+# Deprecated Render deployment guide
 
-## 1. Overview
+This guide describes the previous single-service deployment architecture and is no
+longer current.
 
-This test plan covers the verification of the OpenShield API deployment
-to Render (Starter instance or higher). The goal is to confirm:
+OpenShield now deploys the API and scan worker as separate Render services through
+the deterministic manual workflow documented here:
 
-- The Render Web Service builds and deploys the Flask app successfully.
-- Alembic upgrades the database once in `startup.sh` before application processes start.
-- The pre-commit hook and GitHub Actions CI pipeline gate the code properly.
-- The CI pipeline is **community-friendly**, allowing forks to pass even without custom secrets.
-- Real Azure scan tests are gated behind `RUN_REAL_SCAN=true` so contributor CI never depends on live Azure credentials.
-- All 32 API test cases (health, findings, score, scans, compliance, dashboard contract, auth, edge cases) pass against the live deployment.
+- [Current Render deployment guide](deployment/render.md)
+- [Render Blueprint](../render.yaml)
+- [Deployment workflow](../.github/workflows/deploy.yml)
 
+Do not use the instructions previously contained in this document.
 ---
 
 ## 2. Methodology and Test Rationale

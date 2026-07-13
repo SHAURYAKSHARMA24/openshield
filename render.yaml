@@ -1,0 +1,155 @@
+# Render blueprint for OpenShield.
+#
+# Declares the staging and production environments as four services:
+#   openshield-api-staging     web    (branch: dev)   -> serves the staging API
+#   openshield-worker-staging  worker (branch: dev)   -> runs scanner.worker
+#   openshield-api             web    (branch: main)  -> serves the production API
+#   openshield-worker          worker (branch: main)  -> runs scanner.worker
+#
+# The scan worker runs as its own background worker service, NOT inside the web
+# container. Restarting/scaling a web service therefore does not kill the worker.
+#
+# Deploy control (autoDeployTrigger — replaces the deprecated `autoDeploy`):
+#   * Web services use `autoDeployTrigger: "off"` (quoted — unquoted `off` is
+#     parsed as boolean false by YAML). Their deploys are driven
+#     deterministically by GitHub Actions
+#     (.github/workflows/deploy.yml -> scripts/render_deploy.py), so Render's own
+#     auto-deploy is disabled to avoid duplicate/racing deploys of the same service.
+#   * All services use `autoDeployTrigger: "off"`. GitHub Actions deploys each
+#     environment's API and worker to the same immutable commit and monitors both
+#     exact deployment IDs.
+#
+# No secret values, real service ids, or credentials are stored here. Secrets are
+# declared per service with `sync: false`, meaning Render will NOT overwrite the
+# values you set in the dashboard on each blueprint sync — set them once per service.
+# (`sync: false` is intentionally declared on the services, not in an env var group:
+# Render does not allow `sync: false` inside envVarGroups.)
+#
+# IMPORTANT: within one environment the web and worker services MUST be given the
+# SAME DATABASE_URL and JWT_SECRET values (they share one database). The blueprint
+# cannot enforce this for sync:false vars, so set them identically in the dashboard.
+
+services:
+  # ── Staging (dev branch) ─────────────────────────────────────────────
+  - type: web
+    name: openshield-api-staging
+    runtime: python
+    branch: dev
+    autoDeployTrigger: "off"
+    buildCommand: pip install -r requirements.txt
+    startCommand: ./startup.sh
+    healthCheckPath: /health
+    envVars:
+      - key: OPENSHIELD_ENV
+        value: production
+      - key: DATABASE_URL
+        sync: false
+      - key: JWT_SECRET
+        sync: false
+      - key: ALLOWED_ORIGINS
+        sync: false
+      - key: AZURE_SUBSCRIPTION_ID
+        sync: false
+      - key: AZURE_CLIENT_ID
+        sync: false
+      - key: AZURE_CLIENT_SECRET
+        sync: false
+      - key: AZURE_TENANT_ID
+        sync: false
+      - key: NVD_API_KEY
+        sync: false
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: SENTRY_DSN
+        sync: false
+
+  - type: worker
+    name: openshield-worker-staging
+    runtime: python
+    branch: dev
+    autoDeployTrigger: "off"
+    buildCommand: pip install -r requirements.txt
+    startCommand: python -m scanner.worker
+    envVars:
+      - key: OPENSHIELD_ENV
+        value: production
+      - key: DATABASE_URL
+        sync: false
+      - key: JWT_SECRET
+        sync: false
+      - key: AZURE_SUBSCRIPTION_ID
+        sync: false
+      - key: AZURE_CLIENT_ID
+        sync: false
+      - key: AZURE_CLIENT_SECRET
+        sync: false
+      - key: AZURE_TENANT_ID
+        sync: false
+      - key: NVD_API_KEY
+        sync: false
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: SENTRY_DSN
+        sync: false
+
+  # ── Production (main branch) ─────────────────────────────────────────
+  - type: web
+    name: openshield-api
+    runtime: python
+    branch: main
+    autoDeployTrigger: "off"
+    buildCommand: pip install -r requirements.txt
+    startCommand: ./startup.sh
+    healthCheckPath: /health
+    envVars:
+      - key: OPENSHIELD_ENV
+        value: production
+      - key: DATABASE_URL
+        sync: false
+      - key: JWT_SECRET
+        sync: false
+      - key: ALLOWED_ORIGINS
+        sync: false
+      - key: AZURE_SUBSCRIPTION_ID
+        sync: false
+      - key: AZURE_CLIENT_ID
+        sync: false
+      - key: AZURE_CLIENT_SECRET
+        sync: false
+      - key: AZURE_TENANT_ID
+        sync: false
+      - key: NVD_API_KEY
+        sync: false
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: SENTRY_DSN
+        sync: false
+
+  - type: worker
+    name: openshield-worker
+    runtime: python
+    branch: main
+    autoDeployTrigger: "off"
+    buildCommand: pip install -r requirements.txt
+    startCommand: python -m scanner.worker
+    envVars:
+      - key: OPENSHIELD_ENV
+        value: production
+      - key: DATABASE_URL
+        sync: false
+      - key: JWT_SECRET
+        sync: false
+      - key: AZURE_SUBSCRIPTION_ID
+        sync: false
+      - key: AZURE_CLIENT_ID
+        sync: false
+      - key: AZURE_CLIENT_SECRET
+        sync: false
+      - key: AZURE_TENANT_ID
+        sync: false
+      - key: NVD_API_KEY
+        sync: false
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: SENTRY_DSN
+        sync: false
