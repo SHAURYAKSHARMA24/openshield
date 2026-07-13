@@ -3,16 +3,40 @@
 import json
 import logging
 import os
+import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import psycopg2
 import psycopg2.extras
+import psycopg2.pool
 
 logger = logging.getLogger(__name__)
 
 FRAMEWORKS_DIR = Path(__file__).parent.parent.parent / "compliance" / "frameworks"
+
+# One pool per DSN, shared across all DatabaseManager instances in this
+# process. Routes create a new DatabaseManager per request, but they all
+# borrow from the same small set of long-lived connections instead of
+# opening a fresh PostgreSQL connection on every request.
+_POOLS: Dict[str, "psycopg2.pool.ThreadedConnectionPool"] = {}
+_POOLS_LOCK = threading.Lock()
+
+
+_POOL_MAX_CONN = int(os.environ.get("DB_POOL_MAX_CONN", "10"))
+
+
+def _get_pool(dsn: str) -> "psycopg2.pool.ThreadedConnectionPool":
+    # Pool creation happens at most once per DSN per process lifetime, so a
+    # plain lock (no unlocked fast path) is simpler and just as cheap here.
+    with _POOLS_LOCK:
+        pool = _POOLS.get(dsn)
+        if pool is None:
+            pool = psycopg2.pool.ThreadedConnectionPool(1, _POOL_MAX_CONN, dsn)
+            _POOLS[dsn] = pool
+        return pool
+
 
 SEVERITY_WEIGHTS = {"HIGH": 10, "MEDIUM": 5, "LOW": 2, "INFO": 0}
 
@@ -73,8 +97,8 @@ class Finding:
 class DatabaseManager:
     """Manages PostgreSQL persistence for scans, findings, and scoring.
 
-    All public methods open a new connection on first use. Call connect()
-    explicitly if you want to pre-warm the connection.
+    Database operations open a new connection on first use. Call connect()
+    explicitly to pre-warm the connection.
     """
 
     def __init__(self, dsn: Optional[str] = None) -> None:
@@ -86,10 +110,10 @@ class DatabaseManager:
     # ------------------------------------------------------------------ #
 
     def connect(self) -> None:
-        """Open a persistent database connection."""
-        self.conn = psycopg2.connect(self.dsn)
+        """Acquire a connection from this DSN's shared pool."""
+        self.conn = _get_pool(self.dsn).getconn()
         self.conn.autocommit = False
-        logger.info("Database connection established")
+        logger.debug("Database connection acquired from pool")
 
     def _get_conn(self) -> Any:
         if self.conn is None or self.conn.closed:
@@ -97,11 +121,16 @@ class DatabaseManager:
         return self.conn
 
     def close(self) -> None:
-        """Close the database connection."""
-        if self.conn and not self.conn.closed:
-            self.conn.close()
+        """Return the connection to its pool (or discard it if broken)."""
+        if self.conn is None:
+            return
+        try:
+            _get_pool(self.dsn).putconn(self.conn, close=bool(self.conn.closed))
+            logger.debug("Database connection returned to pool")
+        except Exception as exc:
+            logger.error("Error returning connection to pool: %s", exc)
+        finally:
             self.conn = None
-            logger.debug("Database connection closed")
 
     def ping(self) -> bool:
         """Execute a trivial query to confirm database connectivity.
@@ -115,128 +144,12 @@ class DatabaseManager:
             cur.fetchone()
         return True
 
-    # ------------------------------------------------------------------ #
-    # Schema                                                                #
-    # ------------------------------------------------------------------ #
-
     def init_db(self) -> None:
-        """Alias for run_migrations. Called by startup.sh on every boot.
-
-        Calling this is always safe; run_migrations() handles both fresh
-        databases and existing ones via IF NOT EXISTS guards throughout.
-        """
-        self.run_migrations()
-
-    def create_tables(self) -> None:
-        """Create the findings, scans, and rules tables if they do not exist.
-
-        Includes all columns, including CVE columns, so fresh databases
-        never need the ALTER TABLE path in run_migrations().
-        """
-        conn = self._get_conn()
-        with conn.cursor() as cur:
-            cur.execute("""
-                CREATE TABLE IF NOT EXISTS scans (
-                    scan_id         UUID PRIMARY KEY,
-                    subscription_id TEXT NOT NULL,
-                    started_at      TIMESTAMPTZ NOT NULL,
-                    claimed_at      TIMESTAMPTZ,
-                    completed_at    TIMESTAMPTZ,
-                    total_findings  INTEGER DEFAULT 0,
-                    score           INTEGER DEFAULT NULL,
-                    cve_enrichment_status TEXT DEFAULT 'PENDING',
-                    status          TEXT DEFAULT 'pending',
-                    attempt_count   INTEGER DEFAULT 0,
-                    error_message   TEXT
-                );
-            """)
-            cur.execute("""
-                CREATE TABLE IF NOT EXISTS findings (
-                    id              SERIAL PRIMARY KEY,
-                    scan_id         UUID REFERENCES scans(scan_id),
-                    rule_id         TEXT NOT NULL,
-                    rule_name       TEXT NOT NULL,
-                    severity        TEXT NOT NULL,
-                    category        TEXT,
-                    resource_id     TEXT,
-                    resource_name   TEXT,
-                    resource_type   TEXT,
-                    description     TEXT,
-                    remediation     TEXT,
-                    playbook        TEXT,
-                    frameworks      JSONB,
-                    metadata        JSONB,
-                    cve_references  JSONB DEFAULT '[]',
-                    cvss_score      FLOAT DEFAULT NULL,
-                    exploit_available BOOLEAN DEFAULT FALSE,
-                    detected_at     TIMESTAMPTZ NOT NULL
-                );
-            """)
-            cur.execute("""
-                CREATE INDEX IF NOT EXISTS idx_findings_scan_id
-                    ON findings(scan_id);
-                CREATE INDEX IF NOT EXISTS idx_findings_severity
-                    ON findings(severity);
-                CREATE INDEX IF NOT EXISTS idx_findings_rule_id
-                    ON findings(rule_id);
-            """)
-        conn.commit()
-        logger.info("Database tables created / verified")
-
-    def run_migrations(self) -> None:
-        """Ensure the schema is fully current. Safe to call on every startup.
-
-        Calls create_tables() first so the call order never matters; this
-        method is safe whether the database is brand new or has existing data.
-
-        On a fresh database:
-            create_tables() creates all tables including CVE columns.
-            The ALTER TABLE below is a no-op (IF NOT EXISTS).
-
-        On a pre-CVE database (existed before this feature was merged):
-            create_tables() verifies tables exist and skips creation.
-            The ALTER TABLE adds the three CVE columns.
-
-        Concurrent startup safety:
-            Both CREATE TABLE IF NOT EXISTS and ALTER TABLE ADD COLUMN IF NOT
-            EXISTS are atomic at the PostgreSQL catalog level. Two Render
-            instances racing at boot will not error; the second call silently
-            no-ops on whichever statement the first already completed.
-        """
-        self.create_tables()
-
-        conn = self._get_conn()
-        try:
-            with conn.cursor() as cur:
-                cur.execute("""
-                    ALTER TABLE findings
-                        ADD COLUMN IF NOT EXISTS cve_references    JSONB   DEFAULT '[]',
-                        ADD COLUMN IF NOT EXISTS cvss_score        FLOAT   DEFAULT NULL,
-                        ADD COLUMN IF NOT EXISTS exploit_available BOOLEAN DEFAULT FALSE
-                """)
-                cur.execute("""
-                    ALTER TABLE scans
-                        ADD COLUMN IF NOT EXISTS cve_enrichment_status TEXT DEFAULT 'COMPLETED',
-                        ADD COLUMN IF NOT EXISTS status                TEXT DEFAULT 'completed',
-                        ADD COLUMN IF NOT EXISTS attempt_count         INTEGER DEFAULT 0,
-                        ADD COLUMN IF NOT EXISTS error_message         TEXT,
-                        ADD COLUMN IF NOT EXISTS claimed_at            TIMESTAMPTZ
-                """)
-                # Fix: If status already existed but was backfilled as 'pending' (e.g. from
-                # a previous buggy deploy), force it to 'completed' for all historical
-                # scans that have already finished.
-                cur.execute(
-                    "UPDATE scans SET status = 'completed' WHERE status = 'pending' AND completed_at IS NOT NULL"
-                )
-
-                # Backfill claimed_at for any currently running scans so they don't get
-                # immediately marked as stale by the new recovery logic.
-                cur.execute("UPDATE scans SET claimed_at = started_at WHERE status = 'running' AND claimed_at IS NULL")
-            conn.commit()
-            logger.info("CVE migrations applied successfully")
-        except Exception as e:
-            logger.error("Failed to run CVE migrations: %s", e)
-            conn.rollback()
+        """Deprecated compatibility hook; schema changes are managed by Alembic."""
+        logger.warning(
+            "DatabaseManager.init_db() is deprecated and no longer manages the schema; "
+            "run 'alembic upgrade head' instead"
+        )
 
     # ------------------------------------------------------------------ #
     # Write                                                                 #
@@ -559,7 +472,6 @@ class DatabaseManager:
                 WHERE scan_id = (
                     SELECT scan_id FROM scans WHERE status = 'completed' ORDER BY started_at DESC LIMIT 1
                 )
-                GROUP BY severity
                 GROUP BY severity
                 """
             )

@@ -7,30 +7,16 @@ set -euo pipefail
 export OPENSHIELD_ENV="${OPENSHIELD_ENV:-production}"
 
 echo "=== OpenShield startup ==="
-echo "Running database initialisation..."
+echo "Applying database migrations..."
+alembic upgrade head
 
-python -c "
-import os, sys
-try:
-    from api.models.finding import DatabaseManager
-    db = DatabaseManager(os.environ['DATABASE_URL'])
-    if hasattr(db, 'init_db'):
-        db.init_db()
-        print('Database initialised.')
-    else:
-        print('WARNING: DatabaseManager has no init_db() method — skipping.')
-except Exception as e:
-    print(f'ERROR during DB init: {e}', file=sys.stderr)
-    sys.exit(1)
-"
-
-echo "Startup complete. Starting background worker and Gunicorn..."
-# Start the background worker process with a simple restart loop
-(
-  until python3 -m scanner.worker; do
-    echo "Worker process crashed with exit code $?. Respawning in 5 seconds..." >&2
-    sleep 5
-  done
-) &
+echo "Startup complete. Starting Gunicorn web server..."
+# NOTE: The scan worker is intentionally NOT started here. It runs as a
+# separate Render background worker service (see render.yaml:
+# openshield-worker / openshield-worker-staging, start command
+# `python -m scanner.worker`). Keeping the worker out of the web container
+# means restarting or scaling the web service does not kill the worker
+# process; the standalone worker recovers stale scans on its own. Do not
+# reintroduce a background worker subshell here.
 
 exec gunicorn --bind=0.0.0.0:$PORT --timeout 120 --workers 2 api.app:application

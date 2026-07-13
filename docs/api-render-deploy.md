@@ -1,19 +1,16 @@
-# Test Plan — API-DEP-001
-# Render API Deployment and CI Smoke Testing
-# ============================================================
+# Deprecated Render deployment guide
 
-## 1. Overview
+This guide describes the previous single-service deployment architecture and is no
+longer current.
 
-This test plan covers the verification of the OpenShield API deployment
-to Render (Starter instance or higher). The goal is to confirm:
+OpenShield now deploys the API and scan worker as separate Render services through
+the deterministic manual workflow documented here:
 
-- The Render Web Service builds and deploys the Flask app successfully.
-- The database is automatically initialized on startup via `init_db`.
-- The pre-commit hook and GitHub Actions CI pipeline gate the code properly.
-- The CI pipeline is **community-friendly**, allowing forks to pass even without custom secrets.
-- Real Azure scan tests are gated behind `RUN_REAL_SCAN=true` so contributor CI never depends on live Azure credentials.
-- All 32 API test cases (health, findings, score, scans, compliance, dashboard contract, auth, edge cases) pass against the live deployment.
+- [Current Render deployment guide](deployment/render.md)
+- [Render Blueprint](../render.yaml)
+- [Deployment workflow](../.github/workflows/deploy.yml)
 
+Do not use the instructions previously contained in this document.
 ---
 
 ## 2. Methodology and Test Rationale
@@ -22,7 +19,7 @@ To ensure the highest reliability of the deployment while remaining community-fr
 
 ### 2.1 Infrastructure and Pipeline Strategy
 * **Targeting Render over Azure F1:** Azure App Service's F1 tier imposes a strict 60 CPU-minute daily cap. Render provides unmetered CPU and always-on availability on paid instances, making it significantly more reliable for production environments.
-* **Database Initialization:** The `api/models/finding.py` was updated with an `init_db` method. This method ensures that all required tables (`scans`, `findings`) are created automatically during the first deployment, preventing HTTP 500 errors.
+* **Database Migrations:** `startup.sh` runs `alembic upgrade head` before starting the worker and Gunicorn. Existing production databases must complete the documented one-time `alembic stamp head` step before this release is deployed.
 * **Pre-commit Hook:** Fails fast. By running syntax checks and local API smoke tests *before* the commit is allowed, we prevent broken code from polluting the remote branch.
 * **Community-Friendly CI Gate:** The GitHub Action is designed to be zero-friction for contributors.
     * **Optional Smoke Tests:** If `JWT_SECRET` is not set (typical for forks), the smoke test step is gracefully skipped rather than failing the build.
@@ -81,8 +78,8 @@ API_URL=https://openshield-api.onrender.com JWT_SECRET=<secret> \
 
 | File | Purpose |
 |---|---|
-| `startup.sh` | Container startup script, DB initialization, and Gunicorn execution |
-| `api/models/finding.py` | Added `init_db` to ensure schema existence on startup |
+| `startup.sh` | Runs Alembic once, then starts the worker and Gunicorn |
+| `alembic/` | Versioned PostgreSQL schema migrations |
 | `.github/workflows/deploy.yml` | Flexible GitHub Actions workflow (optional smoke tests) |
 | `tests/smoke_test.py` | 23-case functional test suite with default secret support |
 | `.git/hooks/pre-commit` | Local Git hook enforcing syntax checks and local smoke tests |
@@ -120,12 +117,14 @@ To enable the automated smoke tests in the CI/CD pipeline, you **must** add the 
 |---|---|---|
 | `JWT_SECRET` | All smoke tests | Must match the value set in Render. Used to sign tokens for test requests. |
 | `API_URL` | All smoke tests (optional) | Your Render Service URL. Defaults to the main production instance if not set. |
-| `AZURE_SUBSCRIPTION_ID` | Real scan tests | Azure Subscription ID passed to the scan trigger endpoint. |
-| `AZURE_CLIENT_ID` | Real scan tests | Service principal client ID for `DefaultAzureCredential`. |
-| `AZURE_CLIENT_SECRET` | Real scan tests | Service principal secret for `DefaultAzureCredential`. |
-| `AZURE_TENANT_ID` | Real scan tests | Azure AD tenant ID for `DefaultAzureCredential`. |
+| `AZURE_SUBSCRIPTION_ID` | Real scan tests | Azure Subscription ID passed to the scan trigger endpoint, and to the `azure/login` OIDC step. |
+| `AZURE_CLIENT_ID` | Real scan tests | Service principal client ID for `DefaultAzureCredential` and the `azure/login` OIDC step. |
+| `AZURE_TENANT_ID` | Real scan tests | Azure AD tenant ID for `DefaultAzureCredential` and the `azure/login` OIDC step. |
 
 > **Note:** `RUN_REAL_SCAN=true` is set automatically by `deploy.yml` on `dev` and `main` branches. Forks and contributor PRs never set this flag, so TC-13 and TC-14 are always skipped in fork CI regardless of which secrets are present.
+>
+> As of #160, Azure authentication for real-scan smoke tests uses GitHub OIDC federation
+> instead of a stored client secret. See `docs/ci-oidc-setup.md` for the one-time setup.
 
 ---
 
@@ -139,7 +138,7 @@ To enable the automated smoke tests in the CI/CD pipeline, you **must** add the 
 
 **DP-02 — Render executes startup script successfully**
 * **Steps:** Push code to GitHub and monitor Render deployment logs.
-* **Expected:** Logs show DB initialization (`Database initialized.`) and Gunicorn starting.
+* **Expected:** Logs show Alembic upgrading to `head` before the worker and Gunicorn start.
 
 **DP-03 — GitHub Actions CI pipeline passes**
 * **Steps:** Push a commit and monitor the GitHub Actions tab.

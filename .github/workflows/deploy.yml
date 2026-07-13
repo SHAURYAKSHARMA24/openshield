@@ -1,12 +1,37 @@
-name: Deploy API to Render
+name: Deploy API and worker to Render
 
 on:
-  workflow_dispatch:   # allows manual trigger from GitHub UI
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Target Render environment
+        required: true
+        type: choice
+        options:
+          - staging
+          - production
+      run_smoke_tests:
+        description: Run smoke tests after deploy
+        required: true
+        default: true
+        type: boolean
+
+concurrency:
+  group: deploy-${{ inputs.environment }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+permissions:
+  id-token: write
+  contents: read
 
 jobs:
   deploy:
-    name: Deploy to Render
+    name: Deploy to Render (${{ inputs.environment }})
     runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
 
     steps:
       - name: Checkout repository
@@ -17,7 +42,6 @@ jobs:
         with:
           python-version: "3.11"
 
-      # ── Dependency caching ─────────────────────────────────────────────
       - name: Cache pip dependencies
         uses: actions/cache@v4
         with:
@@ -31,30 +55,86 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      # ── Secret check (Determines if smoke tests should run) ───────────
-      - name: Check for JWT_SECRET
-        id: check_config
-        run: |
-          if [ -n "${{ secrets.JWT_SECRET }}" ]; then
-            echo "is_configured=true" >> $GITHUB_OUTPUT
-          else
-            echo "is_configured=false" >> $GITHUB_OUTPUT
-          fi
-
-      # ── Wait for Render auto-deployment ────────────────────────────────
-      # Render handles the actual physical deployment when you push.
-      # We just pause the Action to let Render's servers finish building.
-      - name: Wait for app to initialise
-        run: |
-          echo "Waiting 120 seconds for Render to build and start the app..."
-          sleep 120
-
-      # ── Health gate ────────────────────────────────────────────────────
-      - name: Health gate check
-        id: health_gate
+      # This must remain before either create step: invalid branch/environment
+      # combinations and missing configuration must result in zero Render POSTs.
+      - name: Validate deployment preflight
         env:
-          # Use secret URL if provided, otherwise fallback to default
-          API_URL: ${{ secrets.API_URL || 'https://openshield-api.onrender.com' }}
+          DEPLOY_ENVIRONMENT: ${{ inputs.environment }}
+          RUN_SMOKE_TESTS: ${{ inputs.run_smoke_tests }}
+          GITHUB_REF_NAME: ${{ github.ref_name }}
+          GITHUB_SHA: ${{ github.sha }}
+          RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+          RENDER_STAGING_SERVICE_ID: ${{ secrets.RENDER_STAGING_SERVICE_ID }}
+          RENDER_STAGING_WORKER_SERVICE_ID: ${{ secrets.RENDER_STAGING_WORKER_SERVICE_ID }}
+          RENDER_PRODUCTION_SERVICE_ID: ${{ secrets.RENDER_PRODUCTION_SERVICE_ID }}
+          RENDER_PRODUCTION_WORKER_SERVICE_ID: ${{ secrets.RENDER_PRODUCTION_WORKER_SERVICE_ID }}
+          STAGING_API_URL: ${{ secrets.STAGING_API_URL }}
+          PRODUCTION_API_URL: ${{ secrets.PRODUCTION_API_URL }}
+          JWT_SECRET: ${{ secrets.JWT_SECRET }}
+          AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+        run: python scripts/render_deploy_preflight.py
+
+      # Creation and polling are separate so both exact deployment IDs are
+      # retained and independently monitored. POST creation is never retried.
+      - name: Create API deployment
+        id: create_api
+        env:
+          RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+          RENDER_SERVICE_ID: ${{ env.RENDER_API_SERVICE_ID }}
+          RENDER_SERVICE_NAME: API
+          GITHUB_SHA: ${{ github.sha }}
+        run: python scripts/render_deploy.py create
+
+      - name: Create worker deployment
+        id: create_worker
+        env:
+          RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+          RENDER_SERVICE_ID: ${{ env.RENDER_WORKER_SERVICE_ID }}
+          RENDER_SERVICE_NAME: worker
+          GITHUB_SHA: ${{ github.sha }}
+        run: python scripts/render_deploy.py create
+
+      - name: Wait for API deployment
+        id: wait_api
+        continue-on-error: true
+        env:
+          RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+          RENDER_SERVICE_ID: ${{ env.RENDER_API_SERVICE_ID }}
+          RENDER_SERVICE_NAME: API
+          RENDER_DEPLOY_ID: ${{ steps.create_api.outputs.deploy_id }}
+          GITHUB_SHA: ${{ github.sha }}
+        run: python scripts/render_deploy.py wait
+
+      - name: Wait for worker deployment
+        id: wait_worker
+        continue-on-error: true
+        env:
+          RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+          RENDER_SERVICE_ID: ${{ env.RENDER_WORKER_SERVICE_ID }}
+          RENDER_SERVICE_NAME: worker
+          RENDER_DEPLOY_ID: ${{ steps.create_worker.outputs.deploy_id }}
+          GITHUB_SHA: ${{ github.sha }}
+        run: python scripts/render_deploy.py wait
+
+      - name: Require both deployments to be live
+        if: always()
+        env:
+          API_RESULT: ${{ steps.wait_api.outcome }}
+          WORKER_RESULT: ${{ steps.wait_worker.outcome }}
+          API_DEPLOY_ID: ${{ steps.create_api.outputs.deploy_id }}
+          WORKER_DEPLOY_ID: ${{ steps.create_worker.outputs.deploy_id }}
+          GITHUB_SHA: ${{ github.sha }}
+        run: |
+          if [ "$API_RESULT" != "success" ] || [ "$WORKER_RESULT" != "success" ]; then
+            echo "ERROR: coordinated deployment failed for SHA $GITHUB_SHA. API deploy $API_DEPLOY_ID: $API_RESULT; worker deploy $WORKER_DEPLOY_ID: $WORKER_RESULT."
+            exit 1
+          fi
+          echo "API deploy $API_DEPLOY_ID and worker deploy $WORKER_DEPLOY_ID are live at SHA $GITHUB_SHA."
+
+      - name: Health gate check
         run: |
           MAX_RETRIES=5
           RETRY_DELAY=15
@@ -64,42 +144,24 @@ jobs:
           for i in $(seq 1 $MAX_RETRIES); do
             echo "Health check attempt $i of $MAX_RETRIES..."
             HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" "$URL" --max-time 30) || true
-
             if [ "$HTTP_STATUS" -eq 200 ]; then
               echo "Health check passed (HTTP $HTTP_STATUS)"
               exit 0
             fi
-
-            echo "Got HTTP $HTTP_STATUS — retrying in ${RETRY_DELAY}s..."
+            echo "Got HTTP $HTTP_STATUS; retrying in ${RETRY_DELAY}s..."
             sleep $RETRY_DELAY
           done
+          echo "ERROR: Health gate failed after $MAX_RETRIES attempts on ${{ inputs.environment }}."
+          exit 1
 
-          echo "HEALTH GATE FAILED after $MAX_RETRIES attempts"
-          echo "Note: If you haven't set up Render for this fork, this is expected."
-          # Only allow failure on feature branches; fail on main/dev
-          if [[ "${{ github.ref }}" == "refs/heads/main" || "${{ github.ref }}" == "refs/heads/dev" ]]; then
-            echo "ERROR: Health check failed on protected branch. Deployment verification required."
-            exit 1
-          else
-            echo "Allowing health check failure on feature branch (infra may not be set up)"
-            exit 0
-          fi
-
-      # ── Smoke tests ────────────────────────────────────────────────────
       - name: Run smoke tests against live deployment
-        if: steps.check_config.outputs.is_configured == 'true' || github.event_name == 'workflow_dispatch'
+        if: inputs.run_smoke_tests
         env:
-          API_URL: ${{ secrets.API_URL || 'https://openshield-api.onrender.com' }}
           JWT_SECRET: ${{ secrets.JWT_SECRET }}
           AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
           AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
-          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
           AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
           RUN_REAL_SCAN: "true"
         run: |
-          if [[ "${{ github.ref }}" == "refs/heads/main" && -z "${{ secrets.JWT_SECRET }}" ]]; then
-            echo "ERROR: Cannot run smoke tests on main branch without JWT_SECRET configured"
-            exit 1
-          fi
           echo "Running smoke tests against: $API_URL"
           python tests/smoke_test.py
