@@ -185,8 +185,8 @@ def create_app() -> Flask:
             g.user = payload
         except jwt.ExpiredSignatureError:
             return jsonify({"error": "Token has expired", "request_id": get_request_id()}), 401
-        except jwt.InvalidTokenError as exc:
-            logger.warning("Invalid JWT token: %s", exc)
+        except jwt.InvalidTokenError:
+            logger.warning("Invalid JWT token")
             return jsonify({"error": "Invalid token", "request_id": get_request_id()}), 401
 
         return None
@@ -195,6 +195,7 @@ def create_app() -> Flask:
     # Blueprints                                                            #
     # ------------------------------------------------------------------ #
     from api.routes.ai import ai_bp
+    from api.routes.cbom import cbom_bp
     from api.routes.compliance import compliance_bp
     from api.routes.drift import drift_bp
     from api.routes.findings import findings_bp
@@ -204,6 +205,7 @@ def create_app() -> Flask:
     from api.routes.score import score_bp
 
     app.register_blueprint(ai_bp)
+    app.register_blueprint(cbom_bp)
     app.register_blueprint(compliance_bp)
     app.register_blueprint(drift_bp)
     app.register_blueprint(findings_bp)
@@ -244,7 +246,8 @@ def create_app() -> Flask:
 
     @app.errorhandler(400)
     def bad_request(exc):
-        return jsonify({"error": "Bad request", "detail": str(exc), "request_id": get_request_id()}), 400
+        logger.warning("Bad request: %s", exc)
+        return jsonify({"error": "Bad request", "request_id": get_request_id()}), 400
 
     @app.errorhandler(401)
     def unauthorized(exc):

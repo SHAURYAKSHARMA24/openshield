@@ -9,7 +9,7 @@ from api.models.finding import DatabaseManager
 compliance_bp = Blueprint("compliance", __name__)
 logger = logging.getLogger(__name__)
 
-SUPPORTED_FRAMEWORKS = ("cis", "nist", "iso27001", "soc2")
+SUPPORTED_FRAMEWORKS = ("cis", "nist", "iso27001", "soc2", "ncsc_pqc", "enisa_pqc")
 
 
 def _get_db() -> DatabaseManager:
@@ -26,7 +26,7 @@ def _get_db() -> DatabaseManager:
 def get_compliance(framework: str):
     """Return pass/fail compliance breakdown for a framework.
 
-    Supported frameworks: cis, nist, iso27001, soc2
+    Supported frameworks: cis, nist, iso27001, soc2, ncsc_pqc, enisa_pqc
 
     Returns control-level pass/fail status mapped to current open findings.
     """
@@ -47,7 +47,8 @@ def get_compliance(framework: str):
 
         return jsonify(result)
     except FileNotFoundError as exc:
-        return jsonify({"error": f"Frameworks directory not found: {exc}"}), 500
+        logger.error("Frameworks directory not found: %s", exc)
+        return jsonify({"error": "Compliance frameworks are not available"}), 500
     except Exception as exc:
         logger.error("Failed to retrieve compliance score for %s: %s", framework, exc)
-        return jsonify({"error": "Compliance calculation failed", "detail": str(exc)}), 500
+        return jsonify({"error": "Compliance calculation failed"}), 500
