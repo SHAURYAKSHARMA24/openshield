@@ -346,9 +346,17 @@ class MockAzureClient:
 
     @staticmethod
     def parse_resource_id(resource_id: str) -> Dict[str, str]:
-        """Parse an Azure resource ID into a dict with name and resource_group."""
-        parts = resource_id.split("/")
-        result: Dict[str, str] = {"name": parts[-1] if parts else ""}
+        """Parse an Azure resource ID into a dict with name and resource_group.
+
+        Always returns both keys, even for malformed or empty IDs, so
+        callers can safely use parsed["resource_group"] without risking
+        a KeyError.
+        """
+        parts = (resource_id or "").split("/")
+        result: Dict[str, str] = {
+            "name": parts[-1] if parts else "",
+            "resource_group": "",
+        }
         for idx, segment in enumerate(parts):
             if segment.lower() == "resourcegroups" and idx + 1 < len(parts):
                 result["resource_group"] = parts[idx + 1]
