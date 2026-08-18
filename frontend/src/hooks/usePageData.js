@@ -47,14 +47,23 @@ export function createPageDataLoader(load, dispatch) {
   };
 }
 
+export function schedulePageDataLoad(loader) {
+  let active = true;
+  queueMicrotask(() => {
+    if (active) loader.retry();
+  });
+
+  return () => {
+    active = false;
+    loader.cancel();
+  };
+}
+
 export default function usePageData(load) {
   const [state, dispatch] = useReducer(pageDataReducer, initialPageDataState);
   const loader = useMemo(() => createPageDataLoader(load, dispatch), [load]);
 
-  useEffect(() => {
-    loader.retry();
-    return () => loader.cancel();
-  }, [loader]);
+  useEffect(() => schedulePageDataLoad(loader), [loader]);
 
   return { ...state, retry: loader.retry };
 }

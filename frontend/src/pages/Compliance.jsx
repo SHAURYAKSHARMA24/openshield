@@ -13,11 +13,7 @@ import usePageData from '../hooks/usePageData';
 export default function Compliance() {
   const [selectedFw, setSelectedFw] = useState(null);
   const [statusFilter, setStatusFilter] = useState('All');
-  const loadCompliance = useCallback(async () => {
-    const loaded = await api.getCompliance();
-    setSelectedFw(loaded.frameworks[0] ?? null);
-    return loaded;
-  }, []);
+  const loadCompliance = useCallback(() => api.getCompliance(), []);
   const { status, data, retry } = usePageData(loadCompliance);
 
   if (status === 'loading') return <Loader rows={8} />;
@@ -35,15 +31,23 @@ export default function Compliance() {
     />
   );
 
+  const activeFramework = data.frameworks.find((framework) => framework.name === selectedFw?.name)
+    ?? data.frameworks[0]
+    ?? null;
+
   const filteredControls = data.controls.filter((c) => {
-    if (selectedFw && c.framework !== selectedFw.name) return false;
+    if (activeFramework && c.framework !== activeFramework.name) return false;
     if (statusFilter !== 'All' && c.status !== statusFilter) return false;
     return true;
   });
 
   return (
     <div className="space-y-6">
-      <FrameworkCards frameworks={data.frameworks} selected={selectedFw} onSelect={setSelectedFw} />
+      <FrameworkCards
+        frameworks={data.frameworks}
+        selected={activeFramework}
+        onSelect={setSelectedFw}
+      />
 
       <Card>
         <h2 className="text-base font-semibold text-text-primary dark:text-text-dark-primary mb-4">Framework Score Trends</h2>

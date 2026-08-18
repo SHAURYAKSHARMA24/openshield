@@ -3,6 +3,7 @@ import {
   createPageDataLoader,
   initialPageDataState,
   pageDataReducer,
+  schedulePageDataLoad,
 } from './usePageData.js';
 
 function createHarness(load) {
@@ -97,6 +98,26 @@ test('cancelled loads cannot overwrite state after unmount', async () => {
   harness.loader.cancel();
   resolveLoad('stale');
   await request;
+  assert.deepEqual(harness.transitions.map(({ status }) => status), ['loading']);
+});
+
+test('Strict Mode effect replay starts only one initial request', async () => {
+  let calls = 0;
+  let resolveLoad;
+  const harness = createHarness(() => {
+    calls++;
+    return new Promise((resolve) => { resolveLoad = resolve; });
+  });
+
+  const cancelFirstSetup = schedulePageDataLoad(harness.loader);
+  cancelFirstSetup();
+  const cancelSecondSetup = schedulePageDataLoad(harness.loader);
+  await new Promise((resolve) => queueMicrotask(resolve));
+
+  assert.equal(calls, 1);
+  cancelSecondSetup();
+  resolveLoad('stale');
+  await new Promise((resolve) => queueMicrotask(resolve));
   assert.deepEqual(harness.transitions.map(({ status }) => status), ['loading']);
 });
 
