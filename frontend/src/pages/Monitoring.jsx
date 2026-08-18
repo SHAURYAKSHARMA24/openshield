@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useCallback } from 'react';
 import { api } from '../utils/api';
 import ScoreGauge from '../components/monitoring/ScoreGauge';
 import TrendChart from '../components/monitoring/TrendChart';
@@ -7,6 +7,8 @@ import FindingsDistribution from '../components/monitoring/FindingsDistribution'
 import ResourceGroupChart from '../components/monitoring/ResourceGroupChart';
 import Card from '../components/shared/Card';
 import Loader, { CardLoader } from '../components/shared/Loader';
+import ErrorState from '../components/shared/ErrorState';
+import usePageData from '../hooks/usePageData';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell } from 'recharts';
 
 function buildRgGroups(findings) {
@@ -51,48 +53,47 @@ function buildTrend(scans) {
 }
 
 export default function Monitoring() {
-  const [data,  setData]  = useState(null);
-  const [error, setError] = useState(false);
+  const loadMonitoring = useCallback(async () => {
+    const [scoreData, findings, scansData] = await Promise.all([
+      api.getScore(),
+      api.getFindings(),
+      api.getScans(),
+    ]);
+    const scans  = scansData.scans || [];
+    const high   = findings.filter((f) => f.severity?.toUpperCase() === 'HIGH').length;
+    const medium = findings.filter((f) => f.severity?.toUpperCase() === 'MEDIUM').length;
+    const low    = findings.filter((f) => f.severity?.toUpperCase() === 'LOW').length;
 
-  useEffect(() => {
-    Promise.all([api.getScore(), api.getFindings(), api.getScans()])
-      .then(([scoreData, findings, scansData]) => {
-        const scans  = scansData.scans || [];
-        const high   = findings.filter((f) => f.severity?.toUpperCase() === 'HIGH').length;
-        const medium = findings.filter((f) => f.severity?.toUpperCase() === 'MEDIUM').length;
-        const low    = findings.filter((f) => f.severity?.toUpperCase() === 'LOW').length;
-
-        setData({
-          score:    scoreData.score    ?? scoreData,
-          maxScore: scoreData.max_score ?? 100,
-          stats: {
-            totalFindings:  findings.length,
-            criticalIssues: high,
-            mediumRisk:     medium,
-            lowPriority:    low,
-          },
-          findingsDistribution: [
-            { name: 'High',   value: high,   color: '#ef4444' },
-            { name: 'Medium', value: medium, color: '#f97316' },
-            { name: 'Low',    value: low,    color: '#10b981' },
-          ],
-          categoryScores:          buildCategoryScores(findings),
-          trend:                   buildTrend(scans),
-          findingsByResourceGroup: buildRgGroups(findings),
-        });
-      })
-      .catch(() => setError(true));
+    return {
+      score:    scoreData.score    ?? scoreData,
+      maxScore: scoreData.max_score ?? 100,
+      stats: {
+        totalFindings:  findings.length,
+        criticalIssues: high,
+        mediumRisk:     medium,
+        lowPriority:    low,
+      },
+      findingsDistribution: [
+        { name: 'High',   value: high,   color: '#ef4444' },
+        { name: 'Medium', value: medium, color: '#f97316' },
+        { name: 'Low',    value: low,    color: '#10b981' },
+      ],
+      categoryScores:          buildCategoryScores(findings),
+      trend:                   buildTrend(scans),
+      findingsByResourceGroup: buildRgGroups(findings),
+    };
   }, []);
+  const { status, data, retry } = usePageData(loadMonitoring);
 
-  if (error) return (
-    <div className="flex items-center justify-center h-64">
-      <p className="text-sm text-text-secondary dark:text-text-dark-tertiary">
-        Could not load monitoring data — backend may be starting up. Refresh to retry.
-      </p>
-    </div>
+  if (status === 'error') return (
+    <ErrorState
+      title="Could not load monitoring data"
+      description="The backend may still be starting. Wait a moment and try again."
+      onRetry={retry}
+    />
   );
 
-  if (!data) return (
+  if (status === 'loading') return (
     <div className="space-y-6">
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
         {[...Array(4)].map((_, i) => <CardLoader key={i} />)}

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useState } from 'react';
 import { api } from '../utils/api';
 import FrameworkCards from '../components/compliance/FrameworkCards';
 import ComplianceTable from '../components/compliance/ComplianceTable';
@@ -6,20 +6,34 @@ import ComparisonChart from '../components/compliance/ComparisonChart';
 import ExportButton from '../components/compliance/ExportButton';
 import Card from '../components/shared/Card';
 import Loader from '../components/shared/Loader';
+import EmptyState from '../components/shared/EmptyState';
+import ErrorState from '../components/shared/ErrorState';
+import usePageData from '../hooks/usePageData';
 
 export default function Compliance() {
-  const [data, setData] = useState(null);
   const [selectedFw, setSelectedFw] = useState(null);
   const [statusFilter, setStatusFilter] = useState('All');
-
-  useEffect(() => {
-    api.getCompliance().then((d) => {
-      setData(d);
-      setSelectedFw(d.frameworks[0]);
-    });
+  const loadCompliance = useCallback(async () => {
+    const loaded = await api.getCompliance();
+    setSelectedFw(loaded.frameworks[0] ?? null);
+    return loaded;
   }, []);
+  const { status, data, retry } = usePageData(loadCompliance);
 
-  if (!data) return <Loader rows={8} />;
+  if (status === 'loading') return <Loader rows={8} />;
+  if (status === 'error') return (
+    <ErrorState
+      title="Could not load compliance data"
+      description="Compliance frameworks and controls are unavailable right now."
+      onRetry={retry}
+    />
+  );
+  if (data.frameworks.length === 0 && data.controls.length === 0) return (
+    <EmptyState
+      title="No compliance results"
+      description="Run a scan to assess resources against compliance frameworks."
+    />
+  );
 
   const filteredControls = data.controls.filter((c) => {
     if (selectedFw && c.framework !== selectedFw.name) return false;
