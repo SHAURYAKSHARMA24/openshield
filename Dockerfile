@@ -6,7 +6,7 @@ RUN apt-get update \
     && apt-get dist-upgrade -y \
     && rm -rf /var/lib/apt/lists/*
 
-COPY requirements.txt .
+COPY requirements.txt ./
 RUN pip install --no-cache-dir --upgrade \
         pip==26.1.2 \
         setuptools==83.0.0 \
@@ -14,6 +14,8 @@ RUN pip install --no-cache-dir --upgrade \
     pip install --no-cache-dir -r requirements.txt
 
 COPY . .
+
+RUN python -m ai.embed
 
 RUN groupadd --system openshield && \
     useradd --system --gid openshield --no-create-home openshield && \
