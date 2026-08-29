@@ -1,6 +1,7 @@
 """Finding dataclass and PostgreSQL-backed DatabaseManager."""
 
 import json
+import hashlib
 import logging
 import os
 import threading
@@ -39,6 +40,28 @@ _POOLS_LOCK = threading.Lock()
 
 
 _POOL_MAX_CONN = int(os.environ.get("DB_POOL_MAX_CONN", "10"))
+
+
+def stable_finding_key(scan_id: str, finding: Dict[str, Any]) -> str:
+    """Return an immutable identity for one logical finding in a scan.
+
+    Rules that can report more than one violation for the same resource must
+    provide ``finding_discriminator``.  Presentation fields such as severity,
+    description, and remediation are deliberately excluded so retries update
+    the existing authoritative finding rather than creating a duplicate.
+    """
+    resource_scope = finding.get("resource_id") or {
+        "resource_type": finding.get("resource_type") or "",
+        "resource_name": finding.get("resource_name") or "",
+    }
+    identity = {
+        "scan_id": str(scan_id),
+        "rule_id": finding.get("rule_id") or "",
+        "resource_scope": resource_scope,
+        "discriminator": finding.get("finding_discriminator") or "default",
+    }
+    encoded = json.dumps(identity, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def _get_pool(dsn: str) -> "psycopg2.pool.ThreadedConnectionPool":
@@ -223,7 +246,9 @@ class DatabaseManager:
         for raw_finding in scan_result.get("findings", []):
             finding = dict(raw_finding)
             finding["severity"] = normalize_severity(finding.get("severity"))
+            finding["finding_key"] = stable_finding_key(scan_result["scan_id"], finding)
             findings.append(finding)
+        evaluations = [dict(raw_evaluation) for raw_evaluation in scan_result.get("evaluations", [])]
 
         conn = self._get_conn()
         completed_at = scan_result.get("completed_at") or datetime.now(timezone.utc).isoformat()
@@ -267,25 +292,39 @@ class DatabaseManager:
                         scan_result["scan_id"],
                     ),
                 )
-                # A worker retry replaces the previous result atomically. This
-                # keeps the scan header, child rows, and recomputed score in
-                # agreement instead of duplicating findings on every attempt.
-                cur.execute("DELETE FROM findings WHERE scan_id = %s", (scan_result["scan_id"],))
+                finding_ids: Dict[tuple[str, str], int] = {}
                 for f in findings:
                     cur.execute(
                         """
                         INSERT INTO findings
-                            (scan_id, rule_id, rule_name, severity, category,
+                            (scan_id, finding_key, rule_id, rule_name, severity, category,
                              resource_id, resource_name, resource_type,
                              description, remediation, playbook,
                              frameworks, metadata, cve_references,
                              cvss_score, exploit_available, detected_at)
-                        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                        ON CONFLICT (scan_id, finding_key) DO UPDATE SET
+                            rule_name = EXCLUDED.rule_name,
+                            severity = EXCLUDED.severity,
+                            category = EXCLUDED.category,
+                            resource_name = EXCLUDED.resource_name,
+                            resource_type = EXCLUDED.resource_type,
+                            description = EXCLUDED.description,
+                            remediation = EXCLUDED.remediation,
+                            playbook = EXCLUDED.playbook,
+                            frameworks = EXCLUDED.frameworks,
+                            metadata = EXCLUDED.metadata,
+                            cve_references = EXCLUDED.cve_references,
+                            cvss_score = EXCLUDED.cvss_score,
+                            exploit_available = EXCLUDED.exploit_available,
+                            detected_at = EXCLUDED.detected_at
+                        RETURNING id
                         """,
                         (
                             # The parent scan owns every child in this batch.
                             # Never trust a caller-supplied child scan_id.
                             scan_result["scan_id"],
+                            f["finding_key"],
                             f.get("rule_id"),
                             f.get("rule_name"),
                             f.get("severity"),
@@ -304,6 +343,70 @@ class DatabaseManager:
                             f.get("detected_at"),
                         ),
                     )
+                    finding_row = cur.fetchone()
+                    finding_id = finding_row["id"] if isinstance(finding_row, dict) else finding_row[0]
+                    finding_ids[(f.get("rule_id") or "", f.get("resource_id") or "")] = finding_id
+
+                finding_keys = [f["finding_key"] for f in findings]
+                if finding_keys:
+                    cur.execute(
+                        "DELETE FROM findings WHERE scan_id = %s AND NOT (finding_key = ANY(%s))",
+                        (scan_result["scan_id"], finding_keys),
+                    )
+                else:
+                    cur.execute("DELETE FROM findings WHERE scan_id = %s", (scan_result["scan_id"],))
+
+                for evaluation in evaluations:
+                    rule_id = evaluation.get("rule_id")
+                    resource_id = evaluation.get("resource_id")
+                    if not rule_id or not resource_id:
+                        raise ValueError("evaluations require rule_id and resource_id")
+                    cur.execute(
+                        """
+                        INSERT INTO rule_evaluations
+                            (scan_id, rule_id, resource_id, resource_type, status,
+                             reason_code, reason, evidence, finding_id, evaluated_at)
+                        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                        ON CONFLICT (scan_id, rule_id, resource_id) DO UPDATE SET
+                            resource_type = EXCLUDED.resource_type,
+                            status = EXCLUDED.status,
+                            reason_code = EXCLUDED.reason_code,
+                            reason = EXCLUDED.reason,
+                            evidence = EXCLUDED.evidence,
+                            finding_id = EXCLUDED.finding_id,
+                            evaluated_at = EXCLUDED.evaluated_at
+                        """,
+                        (
+                            scan_result["scan_id"],
+                            rule_id,
+                            resource_id,
+                            evaluation.get("resource_type") or "",
+                            evaluation.get("status"),
+                            evaluation.get("reason_code"),
+                            evaluation.get("reason"),
+                            json.dumps(evaluation.get("evidence", {})),
+                            finding_ids.get((rule_id, resource_id)),
+                            completed_at,
+                        ),
+                    )
+
+                if evaluations:
+                    cur.execute(
+                        """
+                        DELETE FROM rule_evaluations
+                        WHERE scan_id = %s
+                          AND (rule_id, resource_id) NOT IN (
+                              SELECT * FROM unnest(%s::text[], %s::text[])
+                          )
+                        """,
+                        (
+                            scan_result["scan_id"],
+                            [evaluation["rule_id"] for evaluation in evaluations],
+                            [evaluation["resource_id"] for evaluation in evaluations],
+                        ),
+                    )
+                else:
+                    cur.execute("DELETE FROM rule_evaluations WHERE scan_id = %s", (scan_result["scan_id"],))
             conn.commit()
         except Exception:
             # psycopg2 connections remain in an aborted transaction after any
