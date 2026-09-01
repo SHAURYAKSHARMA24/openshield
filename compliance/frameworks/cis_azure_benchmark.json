@@ -13,6 +13,32 @@
       "control_name": "Ensure that 'Secure transfer required' is set to 'Enabled'",
       "description": "Enabling 'Secure transfer required' on a storage account ensures that all requests made to the storage account use HTTPS. Any requests using HTTP are rejected, protecting data in transit from eavesdropping and man-in-the-middle attacks."
     },
+    "AZ-STOR-006": {
+      "control_id": "N/A-STOR-006",
+      "control_name": "Storage Account Shared-Key Authorization Enabled",
+      "description": "OpenShield checks this service-specific control without claiming an unrelated CIS recommendation."
+    },
+    "AZ-STOR-007": {
+      "control_id": "N/A-STOR-007",
+      "control_name": "Storage Account Allows TLS Below 1.2",
+      "description": "OpenShield checks this service-specific control without claiming an unrelated CIS recommendation."
+    },
+    "AZ-STOR-008": {
+      "control_id": "N/A-STOR-008",
+      "control_name": "Required Storage Customer-Managed Key Protection Missing",
+      "description": "OpenShield checks this service-specific control without claiming an unrelated CIS recommendation."
+    },
+    "AZ-STOR-009": {
+      "control_id": "N/A-STOR-009",
+      "control_name": "Required Blob Container Immutability Missing",
+      "description": "OpenShield checks this service-specific control without claiming an unrelated CIS recommendation."
+    },
+    "AZ-DB-005": {"control_id": "N/A-DB-005", "control_name": "SQL Server Microsoft Entra-Only Authentication Not Enforced", "description": "Service-specific OpenShield control."},
+    "AZ-DB-006": {"control_id": "N/A-DB-006", "control_name": "SQL Vulnerability Assessment Not Configured", "description": "Service-specific OpenShield control."},
+    "AZ-DB-007": {"control_id": "N/A-DB-007", "control_name": "SQL Auditing Retention Below Minimum", "description": "Service-specific OpenShield control."},
+    "AZ-COSMOS-001": {"control_id": "N/A-COSMOS-001", "control_name": "Cosmos DB Local Authentication Enabled", "description": "Service-specific OpenShield control."},
+    "AZ-COSMOS-002": {"control_id": "N/A-COSMOS-002", "control_name": "Cosmos DB Public Network Access Enabled", "description": "Service-specific OpenShield control."},
+    "AZ-CACHE-001": {"control_id": "N/A-CACHE-001", "control_name": "Managed Cache Public or Non-TLS Access", "description": "Service-specific OpenShield control."},
     "AZ-NET-001": {
       "control_id": "6.2",
       "control_name": "Ensure that SSH access from the Internet is evaluated and restricted",
@@ -313,6 +339,17 @@
     "AZ-BAK-002": {"control_id":"N/A-BAK-002","control_name":"Backup vault immutability","description":"No direct CIS Azure recommendation is assigned; OpenShield evaluates the Azure Backup immutability control."},
     "AZ-BAK-004": {"control_id":"N/A-BAK-004","control_name":"Backup multi-user authorization","description":"No direct CIS Azure recommendation is assigned; OpenShield evaluates the Azure Backup authorization control."},
     "AZ-BAK-006": {"control_id":"N/A-BAK-006","control_name":"Backup security monitoring","description":"No direct CIS Azure recommendation is assigned; OpenShield evaluates the Azure Backup monitoring control."},
+    "AZ-IDN-016": {"control_id": "N/A-IDN-016", "control_name": "Privileged User Missing Phishing-Resistant MFA", "description": "Service-specific OpenShield control for phishing-resistant MFA enforcement on privileged users."},
+    "AZ-IDN-017": {"control_id": "N/A-IDN-017", "control_name": "Global Administrator Permanently Assigned Outside PIM", "description": "Service-specific OpenShield control for PIM-governed Global Administrator assignments."},
+    "AZ-IDN-018": {"control_id": "N/A-IDN-018", "control_name": "Privileged Role Assigned Outside PIM", "description": "Service-specific OpenShield control requiring all privileged roles to be managed via PIM."},
+    "AZ-IDN-019": {"control_id": "N/A-IDN-019", "control_name": "Stale Privileged Account Retains Active Access", "description": "Service-specific OpenShield control for dormant privileged accounts."},
+    "AZ-IDN-020": {"control_id": "N/A-IDN-020", "control_name": "Emergency Access Accounts Missing or Misconfigured", "description": "Service-specific OpenShield control for break-glass account configuration."},
+    "AZ-IDN-021": {"control_id": "N/A-IDN-021", "control_name": "Legacy Authentication Not Blocked by Conditional Access", "description": "Service-specific OpenShield control for blocking legacy authentication protocols."},
+    "AZ-IDN-022": {"control_id": "N/A-IDN-022", "control_name": "Azure Management Not Protected by Conditional Access", "description": "Service-specific OpenShield control requiring CA protection for Azure management."},
+    "AZ-IDN-023": {"control_id": "N/A-IDN-023", "control_name": "Identity Protection Risk Policies Not Enabled", "description": "Service-specific OpenShield control for Identity Protection risk policy enablement."},
+    "AZ-IDN-024": {"control_id": "N/A-IDN-024", "control_name": "Workload Identities Excluded From Conditional Access", "description": "Service-specific OpenShield control for workload identity CA coverage."},
+    "AZ-IDN-025": {"control_id": "N/A-IDN-025", "control_name": "Privileged Role-Assignable Group Has No Owner", "description": "Service-specific OpenShield control for privileged group ownership governance."},
+
     "AZ-SC-001": {
       "control_id": "N/A-SC-001",
       "control_name": "Container Registry admin user baseline (not mapped in CIS Azure Foundations 2.0.0)",
