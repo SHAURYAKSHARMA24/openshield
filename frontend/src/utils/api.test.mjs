@@ -8,8 +8,12 @@ import path from 'node:path';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-function loadApiModule({ fetchImpl, timers } = {}) {
+function loadApiModule({ fetchImpl, timers, token = null } = {}) {
   let source = readFileSync(path.join(__dirname, 'api.js'), 'utf8');
+  source = source.replace(
+    "import { normalizeRisk, normalizeSeverity } from './severity.js';",
+    'const normalizeRisk = (value) => value; const normalizeSeverity = (value) => value;',
+  );
   source = source.replace(
     /import\.meta\.env\.VITE_API_URL\s*\|\|\s*\(import\.meta\.env\.DEV \? '[^']*' : '[^']*'\)/,
     "'http://localhost:5000'",
@@ -22,7 +26,10 @@ function loadApiModule({ fetchImpl, timers } = {}) {
     ApiTimeoutError, ApiCancellationError, ApiHttpError, ApiNetworkError,
   };`;
 
-  const localStorageStub = { getItem: () => null, setItem: () => {} };
+  const localStorageStub = {
+    getItem: (key) => key === 'jwt_token' ? token : null,
+    setItem: () => {},
+  };
   const load = new Function(
     'localStorage', 'fetch', 'AbortController', 'setTimeout', 'clearTimeout', source,
   );
@@ -235,6 +242,206 @@ test('timeouts can be disabled explicitly for a caller-managed request', async (
   });
   await apiFetch('/score', { timeoutMs: null });
   assert.equal(timers.delays.length, 0);
+});
+
+test('invalid timeout values fail before fetch and remove the caller listener', async () => {
+  let fetchCalls = 0;
+  let listeners = 0;
+  const callerSignal = {
+    aborted: false,
+    addEventListener() { listeners++; },
+    removeEventListener() { listeners--; },
+  };
+  const { apiFetch } = loadApiModule({
+    fetchImpl: async () => { fetchCalls++; return jsonResponse({}); },
+  });
+
+  await assert.rejects(apiFetch('/score', { timeoutMs: -1, signal: callerSignal }), TypeError);
+  assert.equal(fetchCalls, 0);
+  assert.equal(listeners, 0);
+});
+
+test('the first abort source deterministically wins caller-timeout races', async () => {
+  {
+    const timers = createTimers();
+    const caller = new AbortController();
+    const { apiFetch, ApiCancellationError } = loadApiModule({
+      timers,
+      fetchImpl: async (_url, { signal }) => rejectWhenAborted(signal),
+    });
+    const request = apiFetch('/score', { signal: caller.signal, timeoutMs: 10 });
+    caller.abort();
+    timers.runNext();
+    await assert.rejects(request, ApiCancellationError);
+  }
+
+  {
+    const timers = createTimers();
+    const caller = new AbortController();
+    const { apiFetch, ApiTimeoutError } = loadApiModule({
+      timers,
+      fetchImpl: async (_url, { signal }) => rejectWhenAborted(signal),
+    });
+    const request = apiFetch('/score', { signal: caller.signal, timeoutMs: 10 });
+    timers.runNext();
+    caller.abort();
+    await assert.rejects(request, ApiTimeoutError);
+  }
+});
+
+test('custom headers are preserved alongside authentication and JSON headers', async () => {
+  let requestOptions;
+  const { api } = loadApiModule({
+    token: 'token-123',
+    fetchImpl: async (_url, options) => {
+      requestOptions = options;
+      return jsonResponse({ score: 88 });
+    },
+  });
+
+  await api.getScore({ headers: { 'X-Request-ID': 'request-1' } });
+  assert.equal(requestOptions.headers.Authorization, 'Bearer token-123');
+  assert.equal(requestOptions.headers['Content-Type'], 'application/json');
+  assert.equal(requestOptions.headers['X-Request-ID'], 'request-1');
+});
+
+test('getScan falls back to the scan list after an HTTP compatibility failure', async () => {
+  const urls = [];
+  const { api } = loadApiModule({
+    fetchImpl: async (url) => {
+      urls.push(url);
+      if (urls.length === 1) return jsonResponse(null, { ok: false, status: 404, statusText: 'Not Found' });
+      return jsonResponse({ scans: [{ scan_id: 'scan-1', status: 'running' }] });
+    },
+  });
+
+  assert.deepEqual(await api.getScan('scan-1'), { scan_id: 'scan-1', status: 'running' });
+  assert.equal(urls.length, 2);
+  assert.match(urls[0], /\/scans\/scan-1$/);
+  assert.match(urls[1], /\/scans$/);
+});
+
+test('getScan propagates network failures without launching a second request', async () => {
+  let calls = 0;
+  const { api, ApiNetworkError } = loadApiModule({
+    fetchImpl: async () => { calls++; throw new TypeError('offline'); },
+  });
+
+  await assert.rejects(api.getScan('scan-1'), ApiNetworkError);
+  assert.equal(calls, 1);
+});
+
+test('getScan propagates timeouts without launching a second request', async () => {
+  const timers = createTimers();
+  let calls = 0;
+  const { api, ApiTimeoutError } = loadApiModule({
+    timers,
+    fetchImpl: async (_url, { signal }) => { calls++; return rejectWhenAborted(signal); },
+  });
+  const request = api.getScan('scan-1', { timeoutMs: 50 });
+  timers.runNext();
+
+  await assert.rejects(request, ApiTimeoutError);
+  assert.equal(calls, 1);
+});
+
+test('getScan propagates explicit caller cancellation', async () => {
+  const caller = new AbortController();
+  const { api, ApiCancellationError } = loadApiModule({
+    fetchImpl: async (_url, { signal }) => rejectWhenAborted(signal),
+  });
+  const request = api.getScan('scan-1', { signal: caller.signal });
+  caller.abort();
+  await assert.rejects(request, ApiCancellationError);
+});
+
+for (const [label, response] of [
+  ['HTTP', jsonResponse(null, { ok: false, status: 503, statusText: 'Unavailable' })],
+  ['network', new TypeError('offline')],
+]) {
+  test(`getPlaybook returns empty optional data after a ${label} failure`, async () => {
+    const { api } = loadApiModule({
+      fetchImpl: async () => {
+        if (response instanceof Error) throw response;
+        return response;
+      },
+    });
+    assert.deepEqual(await api.getPlaybook('finding-1'), {
+      portalSteps: [], cliCommands: [], validationSteps: [], references: [],
+    });
+  });
+}
+
+test('getPlaybook returns empty optional data after a timeout', async () => {
+  const timers = createTimers();
+  const { api } = loadApiModule({
+    timers,
+    fetchImpl: async (_url, { signal }) => rejectWhenAborted(signal),
+  });
+  const request = api.getPlaybook('finding-1', { timeoutMs: 20 });
+  timers.runNext();
+  assert.deepEqual(await request, {
+    portalSteps: [], cliCommands: [], validationSteps: [], references: [],
+  });
+});
+
+test('getPlaybook propagates explicit caller cancellation', async () => {
+  const caller = new AbortController();
+  const { api, ApiCancellationError } = loadApiModule({
+    fetchImpl: async (_url, { signal }) => rejectWhenAborted(signal),
+  });
+  const request = api.getPlaybook('finding-1', { signal: caller.signal });
+  caller.abort();
+  await assert.rejects(request, ApiCancellationError);
+});
+
+test('getCVESummary falls back for HTTP, network, and timeout failures', async () => {
+  for (const failure of ['http', 'network', 'timeout']) {
+    const timers = createTimers();
+    const { api } = loadApiModule({
+      timers,
+      fetchImpl: async (_url, { signal }) => {
+        if (failure === 'http') return jsonResponse(null, { ok: false, status: 404, statusText: 'Not Found' });
+        if (failure === 'network') throw new TypeError('offline');
+        return rejectWhenAborted(signal);
+      },
+    });
+    const request = api.getCVESummary({ timeoutMs: 20 });
+    if (failure === 'timeout') timers.runNext();
+    assert.equal(await request, null);
+  }
+});
+
+test('getCVESummary propagates explicit caller cancellation', async () => {
+  const caller = new AbortController();
+  const { api, ApiCancellationError } = loadApiModule({
+    fetchImpl: async (_url, { signal }) => rejectWhenAborted(signal),
+  });
+  const request = api.getCVESummary({ signal: caller.signal });
+  caller.abort();
+  await assert.rejects(request, ApiCancellationError);
+});
+
+test('triggerScan is attempted once and options cannot override its POST body', async () => {
+  let calls = 0;
+  let requestOptions;
+  const { api, ApiNetworkError } = loadApiModule({
+    fetchImpl: async (_url, options) => {
+      calls++;
+      requestOptions = options;
+      throw new TypeError('offline');
+    },
+  });
+
+  await assert.rejects(api.triggerScan('sub-1', {
+    method: 'GET',
+    body: 'wrong',
+    headers: { 'X-Request-ID': 'request-1' },
+  }), ApiNetworkError);
+  assert.equal(calls, 1);
+  assert.equal(requestOptions.method, 'POST');
+  assert.equal(requestOptions.body, JSON.stringify({ subscription_id: 'sub-1' }));
+  assert.equal(requestOptions.headers['X-Request-ID'], 'request-1');
 });
 
 let failures = 0;

@@ -55,6 +55,12 @@ export class ApiNetworkError extends ApiRequestError {
   }
 }
 
+function isOptionalDataError(err) {
+  return err instanceof ApiHttpError
+    || err instanceof ApiNetworkError
+    || err instanceof ApiTimeoutError;
+}
+
 export async function apiFetch(path, options = {}) {
   const {
     timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS,
@@ -374,7 +380,7 @@ export const api = {
   getCVESummary: async (options = {}) => {
     try { return await apiFetch('/score/cve-summary', options); }
     catch (err) {
-      if (err instanceof ApiHttpError) return null;
+      if (isOptionalDataError(err)) return null;
       throw err;
     }
   },
@@ -393,7 +399,7 @@ export const api = {
   getPlaybook: async (id, options = {}) => {
     try { return normalizePlaybook(await apiFetch(`/findings/${id}/playbook`, options)); }
     catch (err) {
-      if (err instanceof ApiHttpError) {
+      if (isOptionalDataError(err)) {
         return { portalSteps: [], cliCommands: [], validationSteps: [], references: [] };
       }
       throw err;
