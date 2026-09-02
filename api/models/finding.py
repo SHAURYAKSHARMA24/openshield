@@ -25,6 +25,11 @@ from openshield.severity import (
 
 logger = logging.getLogger(__name__)
 
+# Worker identities are per-process UUIDs. Heartbeat rows older than this are
+# long-dead workers that no metric reads, so they are pruned to keep
+# worker_heartbeats bounded. Must stay far above any heartbeat interval.
+DEFAULT_WORKER_HEARTBEAT_RETENTION_SECONDS = 7 * 24 * 60 * 60
+
 
 class LostLease(RuntimeError):
     """Raised when a worker no longer owns the scan it is trying to update."""
@@ -257,7 +262,6 @@ class DatabaseManager:
             finding["severity"] = normalize_severity(finding.get("severity"))
             finding["finding_key"] = stable_finding_key(scan_result["scan_id"], finding)
             findings.append(finding)
-        evaluations = [dict(raw_evaluation) for raw_evaluation in scan_result.get("evaluations", [])]
 
         conn = self._get_conn()
         completed_at = scan_result.get("completed_at") or datetime.now(timezone.utc).isoformat()
@@ -301,7 +305,6 @@ class DatabaseManager:
                         scan_result["scan_id"],
                     ),
                 )
-                finding_ids: Dict[tuple[str, str], int] = {}
                 for f in findings:
                     cur.execute(
                         """
@@ -327,7 +330,6 @@ class DatabaseManager:
                             cvss_score = EXCLUDED.cvss_score,
                             exploit_available = EXCLUDED.exploit_available,
                             detected_at = EXCLUDED.detected_at
-                        RETURNING id
                         """,
                         (
                             # The parent scan owns every child in this batch.
@@ -352,10 +354,6 @@ class DatabaseManager:
                             f.get("detected_at"),
                         ),
                     )
-                    finding_row = cur.fetchone()
-                    finding_id = finding_row["id"] if isinstance(finding_row, dict) else finding_row[0]
-                    finding_ids[(f.get("rule_id") or "", f.get("resource_id") or "")] = finding_id
-
                 finding_keys = [f["finding_key"] for f in findings]
                 if finding_keys:
                     cur.execute(
@@ -365,57 +363,11 @@ class DatabaseManager:
                 else:
                     cur.execute("DELETE FROM findings WHERE scan_id = %s", (scan_result["scan_id"],))
 
-                for evaluation in evaluations:
-                    rule_id = evaluation.get("rule_id")
-                    resource_id = evaluation.get("resource_id")
-                    if not rule_id or not resource_id:
-                        raise ValueError("evaluations require rule_id and resource_id")
-                    cur.execute(
-                        """
-                        INSERT INTO rule_evaluations
-                            (scan_id, rule_id, resource_id, resource_type, status,
-                             reason_code, reason, evidence, finding_id, evaluated_at)
-                        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
-                        ON CONFLICT (scan_id, rule_id, resource_id) DO UPDATE SET
-                            resource_type = EXCLUDED.resource_type,
-                            status = EXCLUDED.status,
-                            reason_code = EXCLUDED.reason_code,
-                            reason = EXCLUDED.reason,
-                            evidence = EXCLUDED.evidence,
-                            finding_id = EXCLUDED.finding_id,
-                            evaluated_at = EXCLUDED.evaluated_at
-                        """,
-                        (
-                            scan_result["scan_id"],
-                            rule_id,
-                            resource_id,
-                            evaluation.get("resource_type") or "",
-                            evaluation.get("status"),
-                            evaluation.get("reason_code"),
-                            evaluation.get("reason"),
-                            json.dumps(evaluation.get("evidence", {})),
-                            finding_ids.get((rule_id, resource_id)),
-                            completed_at,
-                        ),
-                    )
-
-                if evaluations:
-                    cur.execute(
-                        """
-                        DELETE FROM rule_evaluations
-                        WHERE scan_id = %s
-                          AND (rule_id, resource_id) NOT IN (
-                              SELECT * FROM unnest(%s::text[], %s::text[])
-                          )
-                        """,
-                        (
-                            scan_result["scan_id"],
-                            [evaluation["rule_id"] for evaluation in evaluations],
-                            [evaluation["resource_id"] for evaluation in evaluations],
-                        ),
-                    )
-                else:
-                    cur.execute("DELETE FROM rule_evaluations WHERE scan_id = %s", (scan_result["scan_id"],))
+                # Per-resource rule evaluations (PASS/FAIL/UNKNOWN/ERROR/
+                # NOT_APPLICABLE) are the #263 coverage contract and are owned
+                # by PR #321, not by this change. When that lands, its
+                # evaluation writes belong here, inside this transaction, so
+                # they inherit the lease/fencing check above for free.
 
                 # Completion creates one durable job in this same fenced
                 # transaction. The scan_id uniqueness constraint makes result
@@ -538,8 +490,23 @@ class DatabaseManager:
         conn.commit()
         logger.info("Updated scan %s enrichment status to %s", scan_id, status)
 
-    def enqueue_enrichment_job(self, scan_id: str) -> tuple[Dict[str, Any], bool]:
-        """Durably enqueue exactly one CVE enrichment job for a scan."""
+    def enqueue_enrichment_job(self, scan_id: str) -> tuple[Dict[str, Any], str]:
+        """Durably enqueue, or explicitly requeue, one CVE enrichment job.
+
+        Returns the job row and one of four outcomes:
+
+        ``created``    a new job row was inserted for this scan.
+        ``requeued``   a terminally ``failed`` job was reset to ``pending``.
+        ``active``     a ``pending``/``running`` job already exists.
+        ``completed``  enrichment already finished; nothing was changed.
+
+        There is never more than one job per scan: the ``scan_id`` unique
+        constraint makes the insert idempotent, and the requeue is a single
+        conditional ``UPDATE`` so concurrent callers converge on one row.  A
+        ``running`` job is left strictly alone -- only its lease expiring
+        (:meth:`recover_stale_enrichment_jobs`) may take it away from its
+        current owner, so an operator retry can never steal a live claim.
+        """
         conn = self._get_conn()
         try:
             with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
@@ -553,25 +520,69 @@ class DatabaseManager:
                     (str(uuid.uuid4()), scan_id),
                 )
                 job = cur.fetchone()
-                if job is None:
-                    cur.execute("SELECT * FROM enrichment_jobs WHERE scan_id = %s", (scan_id,))
-                    existing = cur.fetchone()
-                    if existing is None:
-                        raise RuntimeError("enrichment job conflict did not return an existing job")
+                if job is not None:
+                    cur.execute(
+                        "UPDATE scans SET cve_enrichment_status = 'PENDING' WHERE scan_id = %s",
+                        (scan_id,),
+                    )
                     conn.commit()
-                    return dict(existing), False
+                    return dict(job), "created"
+
+                # A job already exists. Only a terminally failed one is
+                # revived, and the WHERE clause is the whole guard: a
+                # concurrent requeue that lost the race sees status
+                # 'pending' and matches nothing, so both callers end up
+                # with the same single pending job.
+                #
+                # attempt_count restarts because the operator is explicitly
+                # granting a fresh retry budget -- leaving it at the limit
+                # would make the job fail again on its first attempt. The
+                # previous error_message is kept as the audit trail, and
+                # checkpoint is kept so the retry resumes rather than
+                # re-enriching findings that already succeeded.
                 cur.execute(
-                    "UPDATE scans SET cve_enrichment_status = 'PENDING' WHERE scan_id = %s",
+                    """
+                    UPDATE enrichment_jobs
+                    SET status = 'pending',
+                        attempt_count = 0,
+                        next_retry_at = CURRENT_TIMESTAMP,
+                        lease_owner = NULL,
+                        lease_expires_at = NULL,
+                        last_heartbeat_at = NULL,
+                        completed_at = NULL
+                    WHERE scan_id = %s AND status = 'failed'
+                    RETURNING *
+                    """,
                     (scan_id,),
                 )
+                requeued = cur.fetchone()
+                if requeued is not None:
+                    cur.execute(
+                        "UPDATE scans SET cve_enrichment_status = 'PENDING' WHERE scan_id = %s",
+                        (scan_id,),
+                    )
+                    conn.commit()
+                    return dict(requeued), "requeued"
+
+                cur.execute("SELECT * FROM enrichment_jobs WHERE scan_id = %s", (scan_id,))
+                existing = cur.fetchone()
+                if existing is None:
+                    raise RuntimeError("enrichment job conflict did not return an existing job")
             conn.commit()
-            return dict(job), True
+            existing = dict(existing)
+            return existing, "completed" if existing["status"] == "completed" else "active"
         except Exception:
             self.rollback(conn)
             raise
 
-    def claim_next_enrichment_job(self, lease_owner: str, lease_seconds: int) -> Optional[Dict[str, Any]]:
-        """Atomically claim the next retry-ready enrichment job."""
+    def claim_next_enrichment_job(
+        self, lease_owner: str, lease_seconds: int, scan_id: Optional[str] = None
+    ) -> Optional[Dict[str, Any]]:
+        """Atomically claim the next retry-ready enrichment job.
+
+        ``scan_id`` restricts the claim to one scan's job, with the same lease
+        and fencing semantics as an unrestricted claim.
+        """
         if lease_seconds <= 0:
             raise ValueError("lease_seconds must be positive")
         conn = self._get_conn()
@@ -590,13 +601,14 @@ class DatabaseManager:
                         SELECT job_id FROM enrichment_jobs
                         WHERE status = 'pending'
                           AND next_retry_at <= CURRENT_TIMESTAMP
+                          AND (%s IS NULL OR scan_id = %s::uuid)
                         ORDER BY created_at ASC
                         FOR UPDATE SKIP LOCKED
                         LIMIT 1
                     )
                     RETURNING *
                     """,
-                    (lease_owner, lease_seconds),
+                    (lease_owner, lease_seconds, scan_id, scan_id),
                 )
                 job = cur.fetchone()
                 if job:
@@ -939,8 +951,16 @@ class DatabaseManager:
             raise
         logger.info("Updated scan %s status to %s", scan_id, status)
 
-    def claim_next_pending_scan(self, lease_owner: str, lease_seconds: int) -> Optional[Dict[str, Any]]:
-        """Atomically claim one pending scan and establish its renewable lease."""
+    def claim_next_pending_scan(
+        self, lease_owner: str, lease_seconds: int, scan_id: Optional[str] = None
+    ) -> Optional[Dict[str, Any]]:
+        """Atomically claim one pending scan and establish its renewable lease.
+
+        ``scan_id`` restricts the claim to one specific scan instead of the
+        oldest pending one.  The lease, fencing and skip-locked semantics are
+        identical either way; callers that must act on a known scan use it so
+        they neither depend on nor disturb the shared queue order.
+        """
         if lease_seconds <= 0:
             raise ValueError("lease_seconds must be positive")
         conn = self._get_conn()
@@ -961,13 +981,14 @@ class DatabaseManager:
                         SELECT scan_id
                         FROM scans
                         WHERE status = 'pending'
+                          AND (%s IS NULL OR scan_id = %s::uuid)
                         ORDER BY started_at ASC
                         FOR UPDATE SKIP LOCKED
                         LIMIT 1
                     )
                     RETURNING *
                     """,
-                    (lease_owner, lease_seconds),
+                    (lease_owner, lease_seconds, scan_id, scan_id),
                 )
                 row = cur.fetchone()
             conn.commit()
@@ -1085,10 +1106,24 @@ class DatabaseManager:
             cur.execute("SELECT * FROM scans ORDER BY started_at DESC LIMIT 100")
             return [dict(row) for row in cur.fetchall()]
 
-    def record_worker_heartbeat(self, worker_id: str, worker_type: str) -> None:
-        """Persist liveness without using worker IDs as metric labels."""
+    def record_worker_heartbeat(
+        self,
+        worker_id: str,
+        worker_type: str,
+        retention_seconds: int = DEFAULT_WORKER_HEARTBEAT_RETENTION_SECONDS,
+    ) -> None:
+        """Persist liveness without using worker IDs as metric labels.
+
+        Worker identities are per-process, so a long-lived deployment would
+        otherwise accumulate one dead row per restart forever.  Retired rows
+        are pruned only on the heartbeat that actually inserts a new worker
+        identity -- i.e. once per worker process -- so the table stays bounded
+        without a scheduler and without a full-table sweep on every beat.
+        """
         if worker_type not in {"scan", "enrichment"}:
             raise ValueError("unsupported worker type")
+        if retention_seconds <= 0:
+            raise ValueError("retention_seconds must be positive")
         conn = self._get_conn()
         try:
             with conn.cursor() as cur:
@@ -1098,9 +1133,22 @@ class DatabaseManager:
                     VALUES (%s, %s, CURRENT_TIMESTAMP)
                     ON CONFLICT (worker_id, worker_type) DO UPDATE SET
                         last_seen_at = EXCLUDED.last_seen_at
+                    RETURNING (xmax = 0) AS inserted
                     """,
                     (worker_id, worker_type),
                 )
+                row = cur.fetchone()
+                inserted = row["inserted"] if isinstance(row, dict) else row[0]
+                if inserted:
+                    # Retention is far longer than any heartbeat interval, so a
+                    # live worker can never prune itself or a peer.
+                    cur.execute(
+                        """
+                        DELETE FROM worker_heartbeats
+                        WHERE last_seen_at < CURRENT_TIMESTAMP - (%s * INTERVAL '1 second')
+                        """,
+                        (retention_seconds,),
+                    )
             conn.commit()
         except Exception:
             self.rollback(conn)
